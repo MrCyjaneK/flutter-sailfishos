@@ -85,7 +85,7 @@ EOF
 
 # Workarounds / fixes
 
-## None of the required 'maliit-glib' found
+## None of the required 'maliit-glib' found AND keyboard not showing
 
 ```bash
 # link comes from https://github.com/sailfishos/maliit-framework/files/14410353/maliit-framework-wayland-2.2.1.zip
