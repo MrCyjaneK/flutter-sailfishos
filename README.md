@@ -1,103 +1,83 @@
-# Flutter for SailfishOS
+# Flutter for Sailfish OS
 
-> Big thanks to Mister_Magister and TheKit
+> I mean Silica is cool but there are things that go out of Qt5.6 fork that I may want to do...
 
-# Preparing enviorment
+## About
 
-```bash
-  [host] $ ssh -p 2222 -i ~/SailfishOS/vmshare/ssh/private_keys/sdk mersdk@localhost
-[mersdk] $ sdk-assistant create SailfishOS-latest-aarch64 https://releases.sailfishos.org/sdk/targets/Sailfish_OS-latest-Sailfish_SDK_Target-aarch64.tar.7z
-[mersdk] $ sb2 -t SailfishOS-latest-aarch64 -R bash -l
-   [sb2] $ uname -m # should output aarch64
-   [sb2] $ zypper in git clang libxkbcommon-devel wayland-protocols-devel wayland-client wayland-egl-devel make glibc-static
+Versions in `versions/<ver>/pin.env`: **3.41.9**, **3.44.0**. Pass `FLUTTER=`
+on every command.
 
-```
+The C++ embedder is Sony’s Wayland/EGL runner
+([flutter-elinux/flutter-embedded-linux](https://github.com/flutter-elinux/flutter-embedded-linux)).
+`libflutter_engine.so` and aarch64 `gen_snapshot` are built from source
+(`make engine`, native aarch64 Docker, `--embedder-for-target` release).
+Google’s `linux-arm64-embedder.zip` is debug/JIT and will not load AOT
+`libapp.so`.
 
-# Installing Flutter
+Runtimes install side by side under `/usr/lib64/flutter-sfos/<version>/`.
+Apps `Requires:` the exact RPM they were AOT-compiled against.
+App ExtraInstall is stock `flutter-elinux build elinux`; we overlay our
+engine/embedder `.so` in the cache and omit those copies from the app RPM.
 
-```bash
-[mersdk] $ sb2 -t SailfishOS-latest-aarch64 -R bash -l
-   [sb2] $ mkdir flutter-elinux
-   [sb2] $ git clone https://github.com/sony/flutter-elinux.git flutter-elinux/$(uname -m)
-   [sb2] $ echo 'export PATH="$PATH:$HOME/flutter-elinux/$(uname -m)/bin"' >> $HOME/.bashrc
-   [sb2] $ echo 'export PATH="$PATH:$HOME/flutter-elinux/$(uname -m)/flutter/bin"' >> $HOME/.bashrc
-   [sb2] $ echo 'export PATH="$PATH:$HOME/.pub-cache/bin"' >> $HOME/.bashrc
-   [sb2] $ ln -s $HOME/.bashrc $HOME/.profile
-   [sb2] $ bash # to reload the variables
-   [sb2] $ git config --global --add safe.directory $HOME/flutter-elinux/$(uname -m)/flutter
-   [sb2] $ flutter-elinux doctor # ignore errors, if `[✓] eLinux toolchain' is green then we good
-   [sb2] $ flutter-elinux precache # This will download tools, feel free to skip but flutter tool will then download them at runtime, which is something that (I, personally) don't really enjoy. 
-   [sb2] $ # Go, create some apps!
-```
+This is an OpenRepos-style extra runtime, not a Harbour-safe bundle.
 
-# Building flutter embedder
+## Host requirements
 
-```bash
-[mersdk] $ sb2 -t SailfishOS-latest-aarch64 -R bash -l
-   [sb2] $ git clone https://github.com/MrCyjaneK/flutter-embedded-linux
-   [sb2] $ cd flutter-embedded-linux
-   [sb2] $ mkdir build && cd build
-   [sb2] $ curl -L https://github.com/sony/flutter-embedded-linux/releases/download/f40e976bed/elinux-arm64-release.zip --output elinux-arm64-release.zip
-   [sb2] $ unzip elinux-arm64-release.zip && rm elinux-arm64-release.zip
-   [sb2] $ cmake ..
-   [sb2] $ make -j$(nproc)
-   [sb2] $ # Done! You should have flutter-client file in current directory
-   [sb2] $ mkdir -p $SAILFISH_SDK_SRC1_MOUNT_POINT/SailfishOS/flutter/$(uname -m)
-   [sb2] $ cp flutter-client $SAILFISH_SDK_SRC1_MOUNT_POINT/SailfishOS/flutter/$(uname -m)
-```
+- Docker + [sfosbuild](https://github.com/mrcyjanek/sfosbuild)
+- `git`
 
-# Porting existing flutter apps
-
-I'll be porting unnamed_monero_wallet, which is an app of mine, it uses `dart:ffi`, native platform channels, custom pub registry - all the things that could possibly cause problems when porting.
-
-If you don't support flutter-elinux **yet** make sure to enable this target by doing something along the lines of (don't forget to cleanup unwanted parts like test/ directory or .metadata afterwards):
+A host Flutter SDK is not required to build apps. First `make engine` is a
+native aarch64 build (slow under qemu on x86). `gclient sync` is a Docker
+layer on `flutter-sfos-engine:<ver>` (rebuilds only when the pin changes);
+ninja `out/` is cached in `.cache/engine/<ver>/aarch64/`.
 
 ```bash
-[host] $ flutter-elinux create --platforms elinux .
+git clone https://github.com/mrcyjanek/flutter-sailfishos
+cd flutter-sailfishos
+make FLUTTER=3.44.0 engine
+make FLUTTER=3.44.0 runtime hello
+make FLUTTER=3.44.0 deploy DEVICE=defaultuser@192.168.1.177
 ```
 
-Then, make sure that the app actually works.
+Launch **as defaultuser**, not root:
 
 ```bash
-[host] $ flutter-elinux run
+ssh defaultuser@192.168.1.177
+export $(systemctl --user show-environment)
+flutter-hello
 ```
 
-Then proceed and build your app for sfos
+Pixel ratio follows Lipstick’s physical DPI (Flutter 160-dpi baseline);
+override with `FLUTTER_SCALE`. Keyboard uses maliit-glib (SFOS ≥ 4.6).
+
+## Porting an app
+
+See [docs/PORTING.md](docs/PORTING.md). Copy [template/elinux](template/elinux),
+[template/rpm](template/rpm), and [template/.sfosbuild](template/.sfosbuild)
+into the app, then `./elinux/build.sh`.
+
+## Adding a Flutter version
 
 ```bash
-[sb2] $ flutter-elinux pub get # NOTE: dependency management will be broken on the other side at all times. If you can't compile just run pub get and it should fix everything.
-[sb2] $ flutter-elinux build elinux --release 
-[sb2] $ cp $SAILFISH_SDK_SRC1_MOUNT_POINT/SailfishOS/flutter/$(uname -m)/flutter-client build/elinux/arm64/release/bundle/flutter-client
-# note: replace unnamed_monero_wallet with the output binary name that you are using
-[sb2] $ cat > build/elinux/arm64/release/bundle/unnamed_monero_wallet <<EOF
-#!/bin/bash
-cd \$(dirname \$0)
-killall flutter-client || true
-
-FLUTTER_LOG_LEVELS=TRACE LD_PRELOAD=\$PWD/lib/libflutter_engine.so ./flutter-client --bundle=\$PWD --fullscreen --force-scale-factor=3
-EOF
-[sb2] $ chmod +x build/elinux/arm64/release/bundle/unnamed_monero_wallet
-[sb2] $ cat > elinux/sailfishos.spec <<EOF
-# TBD:
-EOF
-[sb2] $ rpmbuild -bb elinux/sailfishos.spec --define "_bundledir $PWD/build/elinux/arm64/release/bundle/" --define "_sourcedir $PWD"
+mkdir versions/X.Y.Z
+cp versions/3.44.0/pin.env versions/X.Y.Z/pin.env
+ln -s 3.44.0 patches/X.Y.Z          # or a real dir if patches change
+# edit ENGINE_HASH (and EMBEDDER_REV / ELINUX_REV if those moved)
+make FLUTTER=X.Y.Z engine runtime
 ```
 
-# Workarounds / fixes
-
-## None of the required 'maliit-glib' found AND keyboard not showing
-
-```bash
-# link comes from https://github.com/sailfishos/maliit-framework/files/14410353/maliit-framework-wayland-2.2.1.zip
-[sb2] $ pushd $(mktemp -d)
-[sb2] $ curl -L --output maliit-framework-wayland-2.2.1.zip https://github.com/sailfishos/maliit-framework/files/14410353/maliit-framework-wayland-2.2.1.zip
-[sb2] $ unzip maliit-framework-wayland-2.2.1.zip
-[sb2] $ zypper in RPMS/*.rpm
-[sb2] $ popd
-```
-
-## fatal error: 'linux/input-event-codes.h' file not found
+## Layout
 
 ```
-[sb2] $ curl -L --output /usr/include/linux/input-event-codes.h https://raw.githubusercontent.com/torvalds/linux/master/include/uapi/linux/input-event-codes.h
+Makefile                            # engine / runtime / hello / deploy
+versions/<ver>/pin.env              # ENGINE_HASH, EMBEDDER_REV, ELINUX_REV, RELEASE
+patches/<ver>/                      # embedder diffs; symlink to a previous ver if unchanged
+engine/                             # Dockerfile (linux/arm64)
+examples/hello/                     # sample app; `./elinux/build.sh` → sfosbuild .
+template/elinux/                    # copy into an app as elinux/
+template/rpm/                       # copy into the app as rpm/
+template/.sfosbuild/                # copy into the app root
+template/runtime/                   # spec.in + cmake + flutter-elinux driver (stamped at make runtime)
 ```
+
+Engine blobs are not committed (`.cache/engine/<ver>/`, `versions/<ver>/engine/`).

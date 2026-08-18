@@ -1,0 +1,37 @@
+Name: my-flutter-app
+Summary: A Flutter app for Sailfish OS
+Version: 1.0.0
+Release: 1
+Group: Applications/System
+License: BSD-3-Clause
+Sources:
+- '%{name}-%{version}.tar.bz2'
+Description: |
+    flutter-elinux build elinux against flutter-sfos-@FLUTTER_VERSION@.
+    Engine/embedder .so come from the runtime RPM, not this package.
+Configure: none
+Builder: none
+Requires:
+- flutter-sfos-@FLUTTER_VERSION@
+PkgBR:
+- clang
+- cmake
+- make
+- git
+- unzip
+- curl
+ExtraInstall: |
+  rpm -Uvh --force flutter-sfos-@FLUTTER_VERSION@-*.aarch64.rpm
+  /usr/libexec/flutter-sfos/@FLUTTER_VERSION@/flutter-sfos-aot "$PWD" "$PWD/build/sfos/bundle"
+  mkdir -p %{buildroot}%{_datadir}/my-flutter-app
+  mkdir -p %{buildroot}%{_bindir}
+  mkdir -p %{buildroot}%{_datadir}/applications
+  cp -a build/sfos/bundle/. %{buildroot}%{_datadir}/my-flutter-app/
+  rm -f %{buildroot}%{_datadir}/my-flutter-app/lib/libflutter_engine.so \
+    %{buildroot}%{_datadir}/my-flutter-app/lib/libflutter_elinux_*.so
+  install -m 755 elinux/my-flutter-app.sh %{buildroot}%{_bindir}/my-flutter-app
+  install -m 644 elinux/my-flutter-app.desktop %{buildroot}%{_datadir}/applications/my-flutter-app.desktop
+Files:
+- '%{_bindir}/my-flutter-app'
+- '%{_datadir}/applications/my-flutter-app.desktop'
+- '%{_datadir}/my-flutter-app/'

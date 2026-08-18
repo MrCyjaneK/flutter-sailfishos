@@ -1,0 +1,45 @@
+--- a/src/flutter/shell/platform/linux_embedded/window/elinux_window_wayland.cc
++++ b/src/flutter/shell/platform/linux_embedded/window/elinux_window_wayland.cc
+@@ -175,6 +175,10 @@
+             std::swap(width, height);
+           }
+ 
++          if (self->IsCoverConfigure(width, height)) {
++            return;
++          }
++
+           int32_t next_width_dip = width / self->current_scale_;
+           int32_t next_height_dip = height / self->current_scale_;
+           if (self->restore_window_required_) {
+@@ -2037,6 +2041,20 @@
+   }
+ }
+ 
++bool ELinuxWindowWayland::IsCoverConfigure(int32_t width,
++                                           int32_t height) const {
++  if (view_properties_.view_mode != FlutterDesktopViewMode::kFullscreen) {
++    return false;
++  }
++  if (display_max_width_ <= 0 || display_max_height_ <= 0 || width <= 0 ||
++      height <= 0) {
++    return false;
++  }
++  const int32_t conf_long = std::max(width, height);
++  const int32_t disp_long = std::max(display_max_width_, display_max_height_);
++  return conf_long * 5 < disp_long * 4;
++}
++
+ void ELinuxWindowWayland::MaybeUpdateDevicePixelRatio() {
+   if (device_pixel_ratio_locked_ || output_physical_width_mm_ <= 0 ||
+       output_mode_width_ <= 0) {
+--- a/src/flutter/shell/platform/linux_embedded/window/elinux_window_wayland.h
++++ b/src/flutter/shell/platform/linux_embedded/window/elinux_window_wayland.h
+@@ -118,6 +118,8 @@
+ 
+   void MaybeUpdateDevicePixelRatio();
+ 
++  bool IsCoverConfigure(int32_t width, int32_t height) const;
++
+   void CreateDecoration(int32_t width_dip, int32_t height_dip);
+ 
+   // Get window decorations height in physical pixels.

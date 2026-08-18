@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Flutter Hello
+Comment=Flutter @FLUTTER_VERSION@ counter sample
+Icon=icon-m-developer-mode
+Exec=flutter-hello
+X-Nemo-Application-Type=generic
+
+[X-Sailjail]
+Sandboxing=Disabled

@@ -1,0 +1,15 @@
+# Built / generated
+/versions/*/engine/
+/versions/*/runtime/
+/.cache/
+/examples/hello/elinux/flutter-hello.sh
+/examples/hello/elinux/flutter-hello.desktop
+/examples/hello/rpm/flutter-hello.yaml
+/examples/hello/elinux/bundle/
+/examples/hello/*.rpm
+/examples/hello/build/
+**/.dart_tool/
+**/.packages
+**/rpms/
+**/out/
+*.iml

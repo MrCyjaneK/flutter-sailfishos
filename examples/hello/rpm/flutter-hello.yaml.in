@@ -1,0 +1,38 @@
+Name: flutter-hello
+Summary: Flutter counter sample for Sailfish OS
+Version: 1.0.0
+Release: 1
+Group: Applications/System
+License: BSD-3-Clause
+Sources:
+- '%{name}-%{version}.tar.bz2'
+Description: |
+    flutter-elinux build elinux against flutter-sfos-@FLUTTER_VERSION@.
+    Engine/embedder .so come from the runtime RPM, not this package.
+Configure: none
+Builder: none
+Requires:
+- flutter-sfos-@FLUTTER_VERSION@
+PkgBR:
+- clang
+- cmake
+- make
+- git
+- unzip
+- curl
+ExtraInstall: |
+  rpm -Uvh --force flutter-sfos-@FLUTTER_VERSION@-*.aarch64.rpm
+  /usr/libexec/flutter-sfos/@FLUTTER_VERSION@/flutter-sfos-aot "$PWD" "$PWD/build/sfos/bundle"
+  mkdir -p %{buildroot}%{_datadir}/flutter-hello
+  mkdir -p %{buildroot}%{_bindir}
+  mkdir -p %{buildroot}%{_datadir}/applications
+  cp -a build/sfos/bundle/. %{buildroot}%{_datadir}/flutter-hello/
+  rm -f %{buildroot}%{_datadir}/flutter-hello/lib/libflutter_engine.so \
+    %{buildroot}%{_datadir}/flutter-hello/lib/libflutter_elinux_*.so
+  install -m 755 elinux/flutter-hello.sh %{buildroot}%{_bindir}/flutter-hello
+  install -m 644 elinux/flutter-hello.desktop %{buildroot}%{_datadir}/applications/flutter-hello.desktop
+Files:
+- '%{_bindir}/flutter-hello'
+- '%{_datadir}/applications/flutter-hello.desktop'
+- '%dir %{_datadir}/flutter-hello'
+- '%{_datadir}/flutter-hello/'

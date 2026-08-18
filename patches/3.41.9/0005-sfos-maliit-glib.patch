@@ -1,0 +1,351 @@
+--- a/cmake/build.cmake
++++ b/cmake/build.cmake
+@@ -233,6 +233,8 @@
+     ${LIBSYSTEMD_INCLUDE_DIRS}
+     ${X11_INCLUDE_DIRS}
+     ${LIBWESTON_INCLUDE_DIRS}
++    ${GLIB_INCLUDE_DIRS}
++    ${MALIIT_GLIB_INCLUDE_DIRS}
+     ## User libraries
+     ${USER_APP_INCLUDE_DIRS}
+ )
+@@ -252,6 +254,8 @@
+     ${LIBUV_LIBRARIES}
+     ${X11_LIBRARIES}
+     ${LIBWESTON_LIBRARIES}
++    ${GLIB_LIBRARIES}
++    ${MALIIT_GLIB_LIBRARIES}
+     ${FLUTTER_EMBEDDER_LIB}
+     ## User libraries
+     ${USER_APP_LIBRARIES}
+--- a/cmake/package.cmake
++++ b/cmake/package.cmake
+@@ -42,3 +42,6 @@
+ # requires for supporting external texture plugin.
+ # OpenGL ES3 are included in glesv2.
+ pkg_check_modules(GLES REQUIRED glesv2)
++
++pkg_check_modules(GLIB REQUIRED glib-2.0)
++pkg_check_modules(MALIIT_GLIB REQUIRED maliit-glib)
+--- a/src/flutter/shell/platform/linux_embedded/flutter_elinux_view.cc
++++ b/src/flutter/shell/platform/linux_embedded/flutter_elinux_view.cc
+@@ -48,6 +48,9 @@
+ }
+ 
+ bool FlutterELinuxView::DispatchEvent() {
++  if (textinput_handler_) {
++    textinput_handler_->DispatchEvent();
++  }
+   return binding_handler_->DispatchEvent();
+ }
+ 
+--- a/src/flutter/shell/platform/linux_embedded/plugins/text_input_plugin.cc
++++ b/src/flutter/shell/platform/linux_embedded/plugins/text_input_plugin.cc
+@@ -7,8 +7,10 @@
+ #include <linux/input-event-codes.h>
+ 
+ #include <iostream>
++#include <map>
+ 
+ #include "flutter/shell/platform/common/json_method_codec.h"
++#include "flutter/shell/platform/linux_embedded/logger.h"
+ 
+ // Avoids the following build error:
+ // ----------------------------------------------------------------
+@@ -53,6 +55,39 @@
+ 
+ constexpr char kBadArgumentError[] = "Bad Arguments";
+ constexpr char kInternalConsistencyError[] = "Internal Consistency Error";
++
++namespace Qt {
++enum Key {
++  Key_Escape = 0x01000000,
++  Key_Tab = 0x01000001,
++  Key_Backspace = 0x01000003,
++  Key_Return = 0x01000004,
++  Key_Enter = 0x01000005,
++  Key_Insert = 0x01000006,
++  Key_Delete = 0x01000007,
++  Key_Pause = 0x01000008,
++  Key_Home = 0x01000010,
++  Key_End = 0x01000011,
++  Key_Left = 0x01000012,
++  Key_Up = 0x01000013,
++  Key_Right = 0x01000014,
++  Key_Down = 0x01000015,
++  Key_PageUp = 0x01000016,
++  Key_PageDown = 0x01000017
++};
++enum Type { KeyPress = 6, KeyRelease = 7 };
++}  // namespace Qt
++
++const std::map<int, int> kQtKeyToLinuxEvent = {
++    {Qt::Key_Escape, KEY_ESC},     {Qt::Key_Tab, KEY_TAB},
++    {Qt::Key_Backspace, KEY_BACKSPACE}, {Qt::Key_Return, KEY_ENTER},
++    {Qt::Key_Enter, KEY_ENTER},    {Qt::Key_Insert, KEY_INSERT},
++    {Qt::Key_Delete, KEY_DELETE},  {Qt::Key_Pause, KEY_PAUSE},
++    {Qt::Key_Home, KEY_HOME},      {Qt::Key_End, KEY_END},
++    {Qt::Key_Left, KEY_LEFT},      {Qt::Key_Up, KEY_UP},
++    {Qt::Key_Right, KEY_RIGHT},    {Qt::Key_Down, KEY_DOWN},
++    {Qt::Key_PageUp, KEY_PAGEUP},  {Qt::Key_PageDown, KEY_PAGEDOWN},
++};
+ }  // namespace
+ 
+ void TextInputPlugin::OnKeyPressed(uint32_t keycode, uint32_t code_point) {
+@@ -95,6 +130,12 @@
+   }
+ }
+ 
++void TextInputPlugin::DispatchEvent() {
++  if (glib_ctx_) {
++    g_main_context_iteration(glib_ctx_, FALSE);
++  }
++}
++
+ TextInputPlugin::TextInputPlugin(BinaryMessenger* messenger,
+                                  WindowBindingHandler* delegate)
+     : channel_(std::make_unique<flutter::MethodChannel<rapidjson::Document>>(
+@@ -103,6 +144,7 @@
+           &flutter::JsonMethodCodec::GetInstance())),
+       delegate_(delegate),
+       active_model_(nullptr) {
++  InitMaliitConnection();
+   channel_->SetMethodCallHandler(
+       [this](
+           const flutter::MethodCall<rapidjson::Document>& call,
+@@ -118,8 +160,10 @@
+ 
+   if (method.compare(kShowMethod) == 0) {
+     delegate_->UpdateVirtualKeyboardStatus(true, input_type_);
++    MaliitShowInputMethod();
+   } else if (method.compare(kHideMethod) == 0) {
+     delegate_->UpdateVirtualKeyboardStatus(false, input_type_);
++    MaliitHideInputMethod();
+   } else if (method.compare(kClearClientMethod) == 0) {
+     active_model_ = nullptr;
+   } else if (method.compare(kSetClientMethod) == 0) {
+@@ -240,4 +284,155 @@
+   channel_->InvokeMethod(kPerformActionMethod, std::move(args));
+ }
+ 
++gboolean TextInputPlugin::MaliitHandleIMInitiatedHide(
++    MaliitContext* obj,
++    GDBusMethodInvocation* invocation,
++    gpointer user_data) {
++  auto* self = reinterpret_cast<TextInputPlugin*>(user_data);
++  if (!self->active_model_) {
++    return FALSE;
++  }
++  if (self->active_model_->composing()) {
++    self->active_model_->CommitComposing();
++    self->active_model_->EndComposing();
++    self->SendStateUpdate(*self->active_model_);
++  }
++  return FALSE;
++}
++
++gboolean TextInputPlugin::MaliitHandleCommitString(
++    MaliitContext* obj,
++    GDBusMethodInvocation* invocation,
++    const gchar* string,
++    int replacement_start,
++    int replacement_length,
++    int cursor_pos,
++    gpointer user_data) {
++  auto* self = reinterpret_cast<TextInputPlugin*>(user_data);
++  if (!self->active_model_ || !string) {
++    return FALSE;
++  }
++  if (self->active_model_->composing()) {
++    self->active_model_->UpdateComposingText(string);
++    self->active_model_->CommitComposing();
++    self->active_model_->EndComposing();
++  } else {
++    self->active_model_->AddText(string);
++  }
++  self->SendStateUpdate(*self->active_model_);
++  return TRUE;
++}
++
++gboolean TextInputPlugin::MaliitHandleUpdatePreedit(
++    MaliitContext* obj,
++    GDBusMethodInvocation* invocation,
++    const gchar* string,
++    GVariant* format_list_data,
++    gint replace_start,
++    gint replace_length,
++    gint cursor_pos,
++    gpointer user_data) {
++  auto* self = reinterpret_cast<TextInputPlugin*>(user_data);
++  if (!self->active_model_ || !string) {
++    return FALSE;
++  }
++  if (!self->active_model_->composing()) {
++    self->active_model_->BeginComposing();
++  }
++  self->active_model_->UpdateComposingText(string);
++  self->SendStateUpdate(*self->active_model_);
++  return TRUE;
++}
++
++gboolean TextInputPlugin::MaliitHandleKeyEvent(MaliitContext* obj,
++                                               GDBusMethodInvocation* invocation,
++                                               gint type,
++                                               gint key,
++                                               gint modifiers,
++                                               const gchar* text,
++                                               gboolean auto_repeat,
++                                               int count,
++                                               guchar request_type,
++                                               gpointer user_data) {
++  auto* self = reinterpret_cast<TextInputPlugin*>(user_data);
++  if (!self->active_model_) {
++    return FALSE;
++  }
++  if (type == Qt::KeyPress) {
++    auto it = kQtKeyToLinuxEvent.find(key);
++    if (it != kQtKeyToLinuxEvent.end()) {
++      self->OnKeyPressed(it->second, 0);
++    }
++  }
++  return TRUE;
++}
++
++void TextInputPlugin::MaliitShowInputMethod() {
++  if (!maliit_server_) {
++    return;
++  }
++  GError* error = nullptr;
++  if (!maliit_server_call_activate_context_sync(maliit_server_, nullptr,
++                                                &error)) {
++    ELINUX_LOG(ERROR) << "Unable to activate Maliit context: "
++                      << error->message;
++    g_clear_error(&error);
++    return;
++  }
++  if (!maliit_server_call_show_input_method_sync(maliit_server_, nullptr,
++                                                 &error)) {
++    ELINUX_LOG(ERROR) << "Unable to show Maliit: " << error->message;
++    g_clear_error(&error);
++  }
++}
++
++void TextInputPlugin::MaliitHideInputMethod() {
++  if (!maliit_server_) {
++    return;
++  }
++  GError* error = nullptr;
++  if (!maliit_server_call_reset_sync(maliit_server_, nullptr, &error)) {
++    ELINUX_LOG(ERROR) << "Unable to reset Maliit: " << error->message;
++    g_clear_error(&error);
++  }
++  if (!maliit_server_call_hide_input_method_sync(maliit_server_, nullptr,
++                                                 &error)) {
++    ELINUX_LOG(ERROR) << "Unable to hide Maliit: " << error->message;
++    g_clear_error(&error);
++  }
++}
++
++void TextInputPlugin::InitMaliitConnection() {
++  glib_ctx_ = g_main_context_new();
++  glib_loop_ = g_main_loop_new(glib_ctx_, FALSE);
++  g_main_context_push_thread_default(glib_ctx_);
++
++  GError* error = nullptr;
++  maliit_server_ = maliit_get_server_sync(nullptr, &error);
++  if (!maliit_server_) {
++    ELINUX_LOG(ERROR) << "Unable to connect to Maliit server: "
++                      << (error ? error->message : "unknown");
++    g_clear_error(&error);
++    return;
++  }
++  g_object_ref(maliit_server_);
++
++  maliit_context_ = maliit_get_context_sync(nullptr, &error);
++  if (!maliit_context_) {
++    ELINUX_LOG(ERROR) << "Unable to connect to Maliit context: "
++                      << (error ? error->message : "unknown");
++    g_clear_error(&error);
++    return;
++  }
++  g_object_ref(maliit_context_);
++  g_signal_connect(maliit_context_, "handle-im-initiated-hide",
++                   G_CALLBACK(MaliitHandleIMInitiatedHide), this);
++  g_signal_connect(maliit_context_, "handle-commit-string",
++                   G_CALLBACK(MaliitHandleCommitString), this);
++  g_signal_connect(maliit_context_, "handle-update-preedit",
++                   G_CALLBACK(MaliitHandleUpdatePreedit), this);
++  g_signal_connect(maliit_context_, "handle-key-event",
++                   G_CALLBACK(MaliitHandleKeyEvent), this);
++}
++
+ }  // namespace flutter
+--- a/src/flutter/shell/platform/linux_embedded/plugins/text_input_plugin.h
++++ b/src/flutter/shell/platform/linux_embedded/plugins/text_input_plugin.h
+@@ -9,6 +9,11 @@
+ 
+ #include <memory>
+ 
++#include <glib.h>
++#include <maliit-glib/maliitbus.h>
++#include <maliit-glib/maliitcontext.h>
++#include <maliit-glib/maliitserver.h>
++
+ #include "flutter/shell/platform/common/client_wrapper/include/flutter/binary_messenger.h"
+ #include "flutter/shell/platform/common/client_wrapper/include/flutter/method_channel.h"
+ #include "flutter/shell/platform/common/text_input_model.h"
+@@ -22,8 +27,42 @@
+   ~TextInputPlugin() = default;
+ 
+   void OnKeyPressed(uint32_t keycode, uint32_t code_point);
++  void DispatchEvent();
+ 
+  private:
++  void InitMaliitConnection();
++  void MaliitShowInputMethod();
++  void MaliitHideInputMethod();
++
++  static gboolean MaliitHandleIMInitiatedHide(MaliitContext* obj,
++                                              GDBusMethodInvocation* invocation,
++                                              gpointer user_data);
++  static gboolean MaliitHandleCommitString(MaliitContext* obj,
++                                           GDBusMethodInvocation* invocation,
++                                           const gchar* string,
++                                           int replacement_start,
++                                           int replacement_length,
++                                           int cursor_pos,
++                                           gpointer user_data);
++  static gboolean MaliitHandleUpdatePreedit(MaliitContext* obj,
++                                            GDBusMethodInvocation* invocation,
++                                            const gchar* string,
++                                            GVariant* format_list_data,
++                                            gint replace_start,
++                                            gint replace_length,
++                                            gint cursor_pos,
++                                            gpointer user_data);
++  static gboolean MaliitHandleKeyEvent(MaliitContext* obj,
++                                       GDBusMethodInvocation* invocation,
++                                       gint type,
++                                       gint key,
++                                       gint modifiers,
++                                       const gchar* text,
++                                       gboolean auto_repeat,
++                                       int count,
++                                       guchar request_type,
++                                       gpointer user_data);
++
+   // Sends the current state of the given model to the Flutter engine.
+   void SendStateUpdate(const TextInputModel& model);
+ 
+@@ -54,6 +93,11 @@
+ 
+   // The delegate for virtual keyboard updates.
+   WindowBindingHandler* delegate_;
++
++  GMainContext* glib_ctx_ = nullptr;
++  GMainLoop* glib_loop_ = nullptr;
++  MaliitServer* maliit_server_ = nullptr;
++  MaliitContext* maliit_context_ = nullptr;
+ };
+ 
+ }  // namespace flutter

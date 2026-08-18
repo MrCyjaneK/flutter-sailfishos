@@ -1,0 +1,171 @@
+# Package ships a prebuilt Flutter SDK (e.g. third_party/ninja) without
+# build-id notes; Sailfish find-debuginfo always uses --strict-build-id.
+%global debug_package %{nil}
+
+Name:           flutter-sfos-@FLUTTER_VERSION@
+Version:        @FLUTTER_VERSION@
+Release:        @RELEASE@
+Summary:        Flutter %{version} runtime for Sailfish OS
+License:        BSD-3-Clause
+URL:            https://github.com/flutter-elinux/flutter-embedded-linux
+Source0:        %{name}-%{version}.tar.bz2
+
+BuildRequires:  clang
+BuildRequires:  cmake
+BuildRequires:  make
+BuildRequires:  pkgconfig
+BuildRequires:  patchelf
+BuildRequires:  pkgconfig(xkbcommon)
+BuildRequires:  pkgconfig(wayland-client)
+BuildRequires:  pkgconfig(wayland-cursor)
+BuildRequires:  pkgconfig(wayland-egl)
+BuildRequires:  pkgconfig(wayland-protocols)
+BuildRequires:  pkgconfig(egl)
+BuildRequires:  pkgconfig(glesv2)
+BuildRequires:  pkgconfig(maliit-glib)
+Requires:       maliit-framework-wayland-glib
+Provides:       flutter-sfos = %{version}
+
+%description
+Versioned Flutter embedder for Sailfish OS. Installs data into
+/usr/lib/flutter-sfos/%{version} so several Flutter versions can
+coexist.
+Apps Require: flutter-sfos-%{version}. The app runner loads
+libflutter_engine.so and libflutter_elinux_wayland.so from this RPM.
+
+%package devel
+Summary:        Headers, flutter-elinux, and AOT toolchain for Flutter %{version}
+Requires:       %{name} = %{version}-%{release}
+
+%description devel
+Headers, cpp_client_wrapper, CMake package, aarch64 gen_snapshot, a slim
+Flutter SDK, and flutter-elinux so an app's ExtraInstall can run
+`flutter-elinux build elinux` (our engine/embedder .so overlay the cache).
+
+%prep
+%setup -q
+
+%build
+libdir=%{_libdir}/flutter-sfos/%{version}
+src=src/flutter-embedded-linux
+test -f engine/libflutter_engine.so
+test -f bin/gen_snapshot
+test -f sdk/bin/flutter
+test -d "$src"
+test -f flutter-elinux/bin/flutter_elinux.dart
+# sfosbuild copyTree writes 0644; restore execute bits for the devel toolchain.
+chmod +x bin/gen_snapshot flutter-sfos-aot flutter-elinux/bin/flutter-elinux
+find sdk/bin -type f -exec chmod a+x {} +
+
+mkdir -p "$src/build"
+cp -f engine/libflutter_engine.so "$src/build/libflutter_engine.so"
+
+export CC=clang
+export CXX=clang++
+
+cmake -S "$src" -B build-client \
+	-DCMAKE_BUILD_TYPE=Release \
+	-DFLUTTER_RELEASE=ON \
+	-DBACKEND_TYPE=WAYLAND \
+	-DBUILD_ELINUX_SO=OFF \
+	-DUSER_PROJECT_PATH=examples/flutter-wayland-client \
+	-DFLUTTER_SFOS_LIBDIR="$libdir" \
+	-DCMAKE_C_COMPILER=clang \
+	-DCMAKE_CXX_COMPILER=clang++
+
+cmake --build build-client -j$(getconf _NPROCESSORS_ONLN)
+
+cmake -S "$src" -B build-so \
+	-DCMAKE_BUILD_TYPE=Release \
+	-DFLUTTER_RELEASE=ON \
+	-DBACKEND_TYPE=WAYLAND \
+	-DBUILD_ELINUX_SO=ON \
+	-DFLUTTER_SFOS_LIBDIR="$libdir" \
+	-DCMAKE_C_COMPILER=clang \
+	-DCMAKE_CXX_COMPILER=clang++
+
+cmake --build build-so -j$(getconf _NPROCESSORS_ONLN)
+
+%install
+libdir=%{_libdir}/flutter-sfos/%{version}
+incdir=%{_includedir}/flutter-sfos/%{version}
+execdir=%{_libexecdir}/flutter-sfos/%{version}
+cmakedir=%{_libdir}/cmake/flutter-sfos-%{version}
+wrapdir=%{_datadir}/flutter-sfos/%{version}/cpp_client_wrapper
+sdkdir=%{_datadir}/flutter-sfos/%{version}/sdk
+elindir=%{_datadir}/flutter-sfos/%{version}/flutter-elinux
+
+mkdir -p %{buildroot}"$libdir" %{buildroot}"$incdir" %{buildroot}"$execdir" %{buildroot}"$cmakedir" %{buildroot}"$wrapdir" %{buildroot}"$sdkdir" %{buildroot}"$elindir"
+
+install -m 755 build-client/flutter-client %{buildroot}"$execdir"/flutter-client
+install -m 755 build-so/libflutter_elinux_wayland.so %{buildroot}"$libdir"/libflutter_elinux_wayland.so
+install -m 755 engine/libflutter_engine.so %{buildroot}"$libdir"/libflutter_engine.so
+install -m 644 engine/icudtl.dat %{buildroot}"$libdir"/icudtl.dat
+install -m 644 engine/flutter_embedder.h %{buildroot}"$incdir"/flutter_embedder.h
+
+# Strip the unstripped Google embedder dylib (debug info is huge).
+strip --strip-unneeded %{buildroot}"$libdir"/libflutter_engine.so || true
+strip --strip-unneeded %{buildroot}"$execdir"/flutter-client || true
+strip --strip-unneeded %{buildroot}"$libdir"/libflutter_elinux_wayland.so || true
+
+patchelf --set-rpath "$libdir" %{buildroot}"$execdir"/flutter-client
+patchelf --set-rpath "$libdir" %{buildroot}"$libdir"/libflutter_elinux_wayland.so
+
+# Public embedder + client-wrapper headers for -devel.
+cp -a src/flutter-embedded-linux/src/flutter/shell/platform/linux_embedded/public/. %{buildroot}"$incdir"/
+mkdir -p %{buildroot}"$incdir"/flutter
+if [ -d src/flutter-embedded-linux/src/client_wrapper/include/flutter ]; then
+	cp -a src/flutter-embedded-linux/src/client_wrapper/include/flutter/. %{buildroot}"$incdir"/flutter/
+fi
+if [ -d src/flutter-embedded-linux/src/flutter/shell/platform/common/client_wrapper/include/flutter ]; then
+	cp -a src/flutter-embedded-linux/src/flutter/shell/platform/common/client_wrapper/include/flutter/. %{buildroot}"$incdir"/flutter/
+fi
+if [ -d src/flutter-embedded-linux/src/flutter/shell/platform/common/public ]; then
+	cp -a src/flutter-embedded-linux/src/flutter/shell/platform/common/public/. %{buildroot}"$incdir"/
+fi
+
+# Same merge Sony puts in ephemeral/cpp_client_wrapper.
+cp -a src/flutter-embedded-linux/src/client_wrapper/. %{buildroot}"$wrapdir"/
+cp -a src/flutter-embedded-linux/src/flutter/shell/platform/common/client_wrapper/. %{buildroot}"$wrapdir"/
+
+install -m 755 bin/gen_snapshot %{buildroot}"$execdir"/gen_snapshot
+install -m 755 flutter-sfos-aot %{buildroot}"$execdir"/flutter-sfos-aot
+cp -a sdk/. %{buildroot}"$sdkdir"/
+cp -a flutter-elinux/. %{buildroot}"$elindir"/
+rm -rf %{buildroot}"$elindir"/flutter
+ln -sfn ../sdk %{buildroot}"$elindir"/flutter
+chmod +x %{buildroot}"$elindir"/bin/flutter-elinux
+
+sed -e "s|@VERSION@|%{version}|g" \
+	-e "s|@LIBDIR@|$libdir|g" \
+	-e "s|@INCLUDEDIR@|$incdir|g" \
+	-e "s|@WRAPPERDIR@|$wrapdir|g" \
+	-e "s|@SDKDIR@|$sdkdir|g" \
+	-e "s|@EXECDIR@|$execdir|g" \
+	cmake/flutter-sfos-config.cmake.in \
+	> %{buildroot}"$cmakedir"/flutter-sfos-config.cmake
+
+%files
+%doc src/flutter-embedded-linux/LICENSE
+%dir %{_libdir}/flutter-sfos
+%dir %{_libdir}/flutter-sfos/%{version}
+%dir %{_libexecdir}/flutter-sfos
+%dir %{_libexecdir}/flutter-sfos/%{version}
+%{_libdir}/flutter-sfos/%{version}/libflutter_engine.so
+%{_libdir}/flutter-sfos/%{version}/libflutter_elinux_wayland.so
+%{_libdir}/flutter-sfos/%{version}/icudtl.dat
+%{_libexecdir}/flutter-sfos/%{version}/flutter-client
+
+%files devel
+%dir %{_includedir}/flutter-sfos
+%dir %{_includedir}/flutter-sfos/%{version}
+%dir %{_libdir}/cmake/flutter-sfos-%{version}
+%{_includedir}/flutter-sfos/%{version}
+%{_libdir}/cmake/flutter-sfos-%{version}/flutter-sfos-config.cmake
+%dir %{_datadir}/flutter-sfos
+%dir %{_datadir}/flutter-sfos/%{version}
+%{_datadir}/flutter-sfos/%{version}/cpp_client_wrapper
+%{_datadir}/flutter-sfos/%{version}/sdk/
+%{_datadir}/flutter-sfos/%{version}/flutter-elinux/
+%{_libexecdir}/flutter-sfos/%{version}/gen_snapshot
+%{_libexecdir}/flutter-sfos/%{version}/flutter-sfos-aot

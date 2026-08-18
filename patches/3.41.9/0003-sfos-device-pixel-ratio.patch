@@ -1,0 +1,188 @@
+--- a/src/flutter/shell/platform/linux_embedded/window/elinux_window.h
++++ b/src/flutter/shell/platform/linux_embedded/window/elinux_window.h
+@@ -46,7 +46,7 @@
+     if (binding_handler_delegate_) {
+       binding_handler_delegate_->UpdateDisplayInfo(
+           static_cast<double>(frame_rate_) / 1000.0, GetCurrentWidth(),
+-          GetCurrentHeight(), current_scale_);
++          GetCurrentHeight(), device_pixel_ratio_);
+     }
+   }
+ 
+@@ -60,6 +60,7 @@
+   int32_t display_max_height_ = -1;
+   int32_t frame_rate_ = 60000;
+   double current_scale_ = 1.0;
++  double device_pixel_ratio_ = 1.0;
+   uint16_t current_rotation_ = 0;
+   // The x coordinate of the pointer in physical pixels.
+   double pointer_x_ = 0;
+--- a/src/flutter/shell/platform/linux_embedded/window/elinux_window_wayland.cc
++++ b/src/flutter/shell/platform/linux_embedded/window/elinux_window_wayland.cc
+@@ -14,6 +14,8 @@
+ #include <cassert>
+ #include <cmath>
+ #include <codecvt>
++#include <cstdio>
++#include <cstdlib>
+ #include <locale>
+ #include <unordered_map>
+ 
+@@ -43,6 +45,55 @@
+ constexpr char kCursorNameNone[] = "none";
+ 
+ constexpr char kClipboardMimeTypeText[] = "text/plain";
++
++double SnapDevicePixelRatio(double dpi) {
++  if (dpi <= 0.0) {
++    return 0.0;
++  }
++  double dpr = std::round(dpi / 160.0 * 4.0) / 4.0;
++  if (dpr < 1.0) {
++    dpr = 1.0;
++  } else if (dpr > 4.0) {
++    dpr = 4.0;
++  }
++  return dpr;
++}
++
++double ReadDconfDouble(const char* key) {
++  char cmd[256];
++  std::snprintf(cmd, sizeof(cmd), "dconf read %s 2>/dev/null", key);
++  FILE* pipe = popen(cmd, "r");
++  if (!pipe) {
++    return 0.0;
++  }
++  char buf[128] = {};
++  if (!std::fgets(buf, sizeof(buf), pipe)) {
++    pclose(pipe);
++    return 0.0;
++  }
++  pclose(pipe);
++  char stripped[128] = {};
++  size_t j = 0;
++  for (size_t i = 0; buf[i] != '\0' && j + 1 < sizeof(stripped); ++i) {
++    const char c = buf[i];
++    if (c != '\'' && c != '"' && c != ' ' && c != '\n' && c != '\r' &&
++        c != '\t') {
++      stripped[j++] = c;
++    }
++  }
++  return std::atof(stripped);
++}
++
++double ReadDevicePixelRatio() {
++  if (const char* env = std::getenv("FLUTTER_SCALE")) {
++    const double value = std::atof(env);
++    if (value > 0.0) {
++      return value;
++    }
++  }
++  return SnapDevicePixelRatio(
++      ReadDconfDouble("/lipstick/screen/primary/physicalDotsPerInch"));
++}
+ }  // namespace
+ 
+ const wl_registry_listener ELinuxWindowWayland::kWlRegistryListener = {
+@@ -656,6 +707,8 @@
+       ELINUX_LOG(TRACE) << "wl_output_listener.geometry";
+       auto self = reinterpret_cast<ELinuxWindowWayland*>(data);
+       self->transform_ = output_transform;
++      self->output_physical_width_mm_ = physical_width;
++      self->MaybeUpdateDevicePixelRatio();
+     },
+     .mode = [](void* data,
+                wl_output* wl_output,
+@@ -667,6 +720,7 @@
+ 
+       auto self = reinterpret_cast<ELinuxWindowWayland*>(data);
+       if (flags & WL_OUTPUT_MODE_CURRENT) {
++        self->output_mode_width_ = width;
+         if (self->current_rotation_ == 90 || self->current_rotation_ == 270 ||
+             self->transform_ == WL_OUTPUT_TRANSFORM_90 ||
+             self->transform_ == WL_OUTPUT_TRANSFORM_270 ||
+@@ -680,6 +734,7 @@
+                          << ", refresh = " << refresh;
+         self->display_max_width_ = width;
+         self->display_max_height_ = height;
++        self->MaybeUpdateDevicePixelRatio();
+ 
+         // Some composers send 0 for the refresh value.
+         if (refresh != 0) {
+@@ -1093,8 +1148,17 @@
+       wp_presentation_clk_id_(UINT32_MAX),
+       window_decorations_(nullptr) {
+   view_properties_ = view_properties;
+-  current_scale_ =
+-      view_properties.force_scale_factor ? view_properties.scale_factor : 1.0;
++  current_scale_ = 1.0;
++  device_pixel_ratio_ = 1.0;
++  device_pixel_ratio_locked_ = false;
++  if (view_properties.force_scale_factor &&
++      view_properties.scale_factor > 0) {
++    device_pixel_ratio_ = view_properties.scale_factor;
++    device_pixel_ratio_locked_ = true;
++  } else if (const double ratio = ReadDevicePixelRatio(); ratio > 0.0) {
++    device_pixel_ratio_ = ratio;
++    device_pixel_ratio_locked_ = true;
++  }
+   SetRotation(view_properties_.view_rotation);
+ 
+   auto xcursor_size_string = std::getenv(kXcursorSizeEnvironmentKey);
+@@ -1303,7 +1367,7 @@
+ }
+ 
+ double ELinuxWindowWayland::GetDpiScale() {
+-  return current_scale_;
++  return device_pixel_ratio_;
+ }
+ 
+ PhysicalWindowBounds ELinuxWindowWayland::GetPhysicalWindowBounds() {
+@@ -1973,11 +2037,23 @@
+   }
+ }
+ 
+-void ELinuxWindowWayland::UpdateWindowScale() {
+-  if (view_properties_.force_scale_factor) {
++void ELinuxWindowWayland::MaybeUpdateDevicePixelRatio() {
++  if (device_pixel_ratio_locked_ || output_physical_width_mm_ <= 0 ||
++      output_mode_width_ <= 0) {
++    return;
++  }
++  const double inches =
++      static_cast<double>(output_physical_width_mm_) / 25.4;
++  const double dpr = SnapDevicePixelRatio(
++      static_cast<double>(output_mode_width_) / inches);
++  if (dpr <= 0.0 || dpr == device_pixel_ratio_) {
+     return;
+   }
++  device_pixel_ratio_ = dpr;
++  request_redraw_ = true;
++}
+ 
++void ELinuxWindowWayland::UpdateWindowScale() {
+   double scale_factor = 1.0;
+   for (auto output_id : entered_outputs_) {
+     if (wl_output_scale_factors_.find(output_id) ==
+--- a/src/flutter/shell/platform/linux_embedded/window/elinux_window_wayland.h
++++ b/src/flutter/shell/platform/linux_embedded/window/elinux_window_wayland.h
+@@ -116,6 +116,8 @@
+   // Updates the surface scale of the window from the list of entered outputs.
+   void UpdateWindowScale();
+ 
++  void MaybeUpdateDevicePixelRatio();
++
+   void CreateDecoration(int32_t width_dip, int32_t height_dip);
+ 
+   // Get window decorations height in physical pixels.
+@@ -221,6 +223,10 @@
+   std::string text_input_type_;
+ 
+   uint32_t text_input_serial_;
++
++  int32_t output_physical_width_mm_ = 0;
++  int32_t output_mode_width_ = 0;
++  bool device_pixel_ratio_locked_ = false;
+ };
+ 
+ }  // namespace flutter

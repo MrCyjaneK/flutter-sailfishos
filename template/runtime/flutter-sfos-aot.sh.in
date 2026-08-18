@@ -1,0 +1,143 @@
+#!/bin/sh
+# Stock `flutter-elinux build elinux`, with our engine/embedder/.so and
+# gen_snapshot planted over Sony's cache. Runs inside sfosbuild ExtraInstall.
+set -eu
+
+APP=$(CDPATH= cd -- "${1:-.}" && pwd)
+BUNDLE=${2:-$APP/build/sfos/bundle}
+VER=@FLUTTER_VERSION@
+SDK=/usr/share/flutter-sfos/$VER/sdk
+ELINUX=/usr/share/flutter-sfos/$VER/flutter-elinux
+SNAP=/usr/libexec/flutter-sfos/$VER/gen_snapshot
+DART=$SDK/bin/cache/dart-sdk/bin/dart
+SNAPSHOT=$ELINUX/bin/cache/flutter-elinux.snapshot
+
+LIB=/usr/lib64/flutter-sfos/$VER
+if [ ! -f "$LIB/libflutter_engine.so" ]; then
+	LIB=/usr/lib/flutter-sfos/$VER
+fi
+
+test -x "$SDK/bin/flutter"
+test -x "$SNAP"
+test -x "$DART"
+test -d "$ELINUX"
+test -f "$LIB/libflutter_engine.so"
+test -f "$LIB/libflutter_elinux_wayland.so"
+test -f "$APP/pubspec.yaml"
+test -d "$APP/elinux"
+
+export FLUTTER_ROOT=$SDK
+export PATH=$SDK/bin:$PATH
+export CI=true
+export FLUTTER_SUPPRESS_ANALYTICS=true
+export PUB_CACHE=${PUB_CACHE:-$APP/.dart_tool/pub-cache}
+export CC=${CC:-clang}
+export CXX=${CXX:-clang++}
+mkdir -p "$PUB_CACHE"
+
+# rpm -Uvh may leave the SDK / flutter-elinux tree read-only.
+chmod -R u+w "$SDK" "$ELINUX" 2>/dev/null || true
+
+# Packaged SDK has no real .git. The flutter wrapper and `git log` need a repo;
+# keep flutter_tools.stamp in sync so the tool snapshot is reused.
+if [ ! -d "$SDK/.git/objects" ]; then
+	rm -rf "$SDK/.git"
+	git -C "$SDK" init --quiet
+	git -C "$SDK" \
+		-c user.email=sdk@flutter-sfos \
+		-c user.name=flutter-sfos \
+		commit --allow-empty --quiet -m "flutter-sfos packaged SDK"
+	if [ -f "$SDK/bin/cache/flutter_tools.stamp" ]; then
+		rest=$(cut -d: -f2- "$SDK/bin/cache/flutter_tools.stamp")
+		printf '%s:%s\n' "$(git -C "$SDK" rev-parse HEAD)" "$rest" \
+			>"$SDK/bin/cache/flutter_tools.stamp"
+	fi
+fi
+if [ -f "$SDK/bin/internal/engine.version" ]; then
+	FLUTTER_PREBUILT_ENGINE_VERSION=$(tr -d '[:space:]' <"$SDK/bin/internal/engine.version")
+	export FLUTTER_PREBUILT_ENGINE_VERSION
+fi
+
+got=
+if [ -f "$SDK/version" ]; then
+	got=$(tr -d '[:space:]' <"$SDK/version")
+fi
+if [ -z "$got" ]; then
+	got=$(flutter --version | awk '/^Flutter / {
+		for (i = 1; i <= NF; i++)
+			if ($i ~ /^[0-9]+\.[0-9]/) { print $i; exit }
+	}')
+fi
+if [ "$got" != "$VER" ]; then
+	echo "flutter-sfos-aot: SDK is $got, need $VER" >&2
+	exit 1
+fi
+
+# NativeBundle runs `nproc` with no fallback.
+if ! command -v nproc >/dev/null 2>&1; then
+	mkdir -p "$APP/.dart_tool/bin"
+	printf '%s\n' '#!/bin/sh' 'exec getconf _NPROCESSORS_ONLN' \
+		>"$APP/.dart_tool/bin/nproc"
+	chmod +x "$APP/.dart_tool/bin/nproc"
+	export PATH="$APP/.dart_tool/bin:$PATH"
+fi
+
+# Skip flutter-elinux's bash wrapper: update_flutter would fetch a second SDK
+# because our empty-commit HEAD != bin/internal/flutter.version. Drive the
+# snapshot instead; Cache.flutterRoot is flutter-elinux/flutter -> our SDK.
+ln -sfn "$SDK" "$ELINUX/flutter"
+mkdir -p "$ELINUX/bin/cache"
+if [ ! -s "$SNAPSHOT" ] || [ ! -f "$ELINUX/.dart_tool/package_config.json" ]; then
+	(cd "$ELINUX" && flutter pub get)
+	"$DART" --disable-dart-dev --no-enable-mirrors \
+		--snapshot="$SNAPSHOT" \
+		--packages="$ELINUX/.dart_tool/package_config.json" \
+		"$ELINUX/bin/flutter_elinux.dart"
+fi
+test -f "$ELINUX/.dart_tool/package_config.json"
+test -s "$SNAPSHOT"
+
+elinux() {
+	"$DART" --disable-dart-dev \
+		--packages="$ELINUX/.dart_tool/package_config.json" \
+		"$SNAPSHOT" "$@"
+}
+
+# Sony zips (headers, wrapper, icu) + linux-desktop gen_snapshot on arm64.
+elinux precache --elinux --linux || {
+	elinux precache --elinux
+	flutter precache --linux || true
+}
+
+# Overlay our --embedder-for-target engine, SFOS-patched wayland .so, and
+# aarch64 gen_snapshot. flutter-elinux copies these into ephemeral/ and links.
+cache=$SDK/bin/cache/artifacts/engine
+rel=$cache/elinux-arm64-release
+mkdir -p "$rel" "$rel/linux-arm64" "$cache/linux-arm64-release"
+cp -f "$LIB/libflutter_engine.so" "$rel/libflutter_engine.so"
+cp -f "$LIB/libflutter_elinux_wayland.so" "$rel/libflutter_elinux_wayland.so"
+chmod +x "$rel/libflutter_engine.so" "$rel/libflutter_elinux_wayland.so"
+cp -f "$SNAP" "$cache/linux-arm64-release/gen_snapshot"
+cp -f "$SNAP" "$rel/linux-arm64/gen_snapshot"
+chmod +x "$cache/linux-arm64-release/gen_snapshot" "$rel/linux-arm64/gen_snapshot"
+find "$cache" -type f -name gen_snapshot -exec cp -f "$SNAP" {} \;
+find "$cache" -type f -name gen_snapshot -exec chmod +x {} \;
+
+cd "$APP"
+elinux clean
+elinux pub get
+elinux build elinux --release --target-arch=arm64 --target-backend-type=wayland
+
+src=$APP/build/elinux/arm64/release/bundle
+if [ ! -d "$src" ]; then
+	echo "flutter-sfos-aot: missing $src" >&2
+	exit 1
+fi
+
+rm -rf "$BUNDLE"
+mkdir -p "$BUNDLE"
+cp -a "$src"/. "$BUNDLE"/
+# Device runtime is flutter-sfos-<ver>; do not ship Sony/our copies in the app.
+rm -f "$BUNDLE/lib/libflutter_engine.so" "$BUNDLE/lib/libflutter_elinux_"*.so
+test -f "$BUNDLE/lib/libapp.so"
+echo "elinux $APP -> $BUNDLE"

@@ -1,0 +1,210 @@
+--- a/src/flutter/shell/platform/linux_embedded/flutter_elinux_view.cc
++++ b/src/flutter/shell/platform/linux_embedded/flutter_elinux_view.cc
+@@ -105,6 +105,12 @@
+   SendWindowMetrics(width_px, height_px, binding_handler_->GetDpiScale());
+ }
+ 
++void FlutterELinuxView::OnWindowMetricsChanged() const {
++  PhysicalWindowBounds bounds = binding_handler_->GetPhysicalWindowBounds();
++  SendWindowMetrics(bounds.width, bounds.height,
++                    binding_handler_->GetDpiScale());
++}
++
+ void FlutterELinuxView::OnPointerMove(double x_px, double y_px) {
+   auto trimmed_xy = GetPointerRotation(x_px, y_px);
+   SendPointerMove(trimmed_xy.first, trimmed_xy.second);
+@@ -378,6 +384,11 @@
+   event.width = width_px;
+   event.height = height_px;
+   event.pixel_ratio = dpiScale;
++  const auto insets = binding_handler_->GetViewInsets();
++  event.physical_view_inset_top = insets.top;
++  event.physical_view_inset_right = insets.right;
++  event.physical_view_inset_bottom = insets.bottom;
++  event.physical_view_inset_left = insets.left;
+   engine_->SendWindowMetricsEvent(event);
+ }
+ 
+--- a/src/flutter/shell/platform/linux_embedded/flutter_elinux_view.h
++++ b/src/flutter/shell/platform/linux_embedded/flutter_elinux_view.h
+@@ -89,6 +89,9 @@
+   void OnWindowSizeChanged(size_t width_px, size_t height_px) const override;
+ 
+   // |WindowBindingHandlerDelegate|
++  void OnWindowMetricsChanged() const override;
++
++  // |WindowBindingHandlerDelegate|
+   void OnPointerMove(double x_px, double y_px) override;
+ 
+   // |WindowBindingHandlerDelegate|
+--- a/src/flutter/shell/platform/linux_embedded/plugins/text_input_plugin.cc
++++ b/src/flutter/shell/platform/linux_embedded/plugins/text_input_plugin.cc
+@@ -297,6 +297,7 @@
+     self->active_model_->EndComposing();
+     self->SendStateUpdate(*self->active_model_);
+   }
++  self->delegate_->UpdateVirtualKeyboardArea(0, 0, 0, 0);
+   return FALSE;
+ }
+ 
+@@ -367,6 +368,19 @@
+   return TRUE;
+ }
+ 
++gboolean TextInputPlugin::MaliitHandleUpdateInputMethodArea(
++    MaliitContext* obj,
++    GDBusMethodInvocation* invocation,
++    gint x,
++    gint y,
++    gint width,
++    gint height,
++    gpointer user_data) {
++  auto* self = reinterpret_cast<TextInputPlugin*>(user_data);
++  self->delegate_->UpdateVirtualKeyboardArea(x, y, width, height);
++  return TRUE;
++}
++
+ void TextInputPlugin::MaliitShowInputMethod() {
+   if (!maliit_server_) {
+     return;
+@@ -400,6 +414,7 @@
+     ELINUX_LOG(ERROR) << "Unable to hide Maliit: " << error->message;
+     g_clear_error(&error);
+   }
++  delegate_->UpdateVirtualKeyboardArea(0, 0, 0, 0);
+ }
+ 
+ void TextInputPlugin::InitMaliitConnection() {
+@@ -433,6 +448,8 @@
+                    G_CALLBACK(MaliitHandleUpdatePreedit), this);
+   g_signal_connect(maliit_context_, "handle-key-event",
+                    G_CALLBACK(MaliitHandleKeyEvent), this);
++  g_signal_connect(maliit_context_, "handle-update-input-method-area",
++                   G_CALLBACK(MaliitHandleUpdateInputMethodArea), this);
+ }
+ 
+ }  // namespace flutter
+--- a/src/flutter/shell/platform/linux_embedded/plugins/text_input_plugin.h
++++ b/src/flutter/shell/platform/linux_embedded/plugins/text_input_plugin.h
+@@ -62,6 +62,14 @@
+                                        int count,
+                                        guchar request_type,
+                                        gpointer user_data);
++  static gboolean MaliitHandleUpdateInputMethodArea(
++      MaliitContext* obj,
++      GDBusMethodInvocation* invocation,
++      gint x,
++      gint y,
++      gint width,
++      gint height,
++      gpointer user_data);
+ 
+   // Sends the current state of the given model to the Flutter engine.
+   void SendStateUpdate(const TextInputModel& model);
+--- a/src/flutter/shell/platform/linux_embedded/window/elinux_window_wayland.cc
++++ b/src/flutter/shell/platform/linux_embedded/window/elinux_window_wayland.cc
+@@ -1600,6 +1600,37 @@
+   }
+ }
+ 
++PhysicalViewInsets ELinuxWindowWayland::GetViewInsets() {
++  return {.bottom = keyboard_inset_bottom_};
++}
++
++void ELinuxWindowWayland::UpdateVirtualKeyboardArea(int32_t x,
++                                                    int32_t y,
++                                                    int32_t width,
++                                                    int32_t height) {
++  double inset = 0.0;
++  const int32_t win_h = static_cast<int32_t>(GetCurrentHeight());
++  if (width > 0 && height > 0 && win_h > 0) {
++    if (y > 0 && y < win_h) {
++      inset = static_cast<double>(win_h - y);
++    } else {
++      inset = static_cast<double>(height);
++    }
++    // Extra space for rounded-corner / home-indicator overlap.
++    inset += 32.0;
++    if (inset > win_h) {
++      inset = win_h;
++    }
++  }
++  if (inset == keyboard_inset_bottom_) {
++    return;
++  }
++  keyboard_inset_bottom_ = inset;
++  if (binding_handler_delegate_) {
++    binding_handler_delegate_->OnWindowMetricsChanged();
++  }
++}
++
+ void ELinuxWindowWayland::UpdateVirtualKeyboardStatus(
+     const bool show,
+     const std::string& input_type) {
+--- a/src/flutter/shell/platform/linux_embedded/window/elinux_window_wayland.h
++++ b/src/flutter/shell/platform/linux_embedded/window/elinux_window_wayland.h
+@@ -86,6 +86,15 @@
+                                    const std::string& input_type = "") override;
+ 
+   // |FlutterWindowBindingHandler|
++  PhysicalViewInsets GetViewInsets() override;
++
++  // |FlutterWindowBindingHandler|
++  void UpdateVirtualKeyboardArea(int32_t x,
++                                 int32_t y,
++                                 int32_t width,
++                                 int32_t height) override;
++
++  // |FlutterWindowBindingHandler|
+   std::string GetClipboardData() override;
+ 
+   // |FlutterWindowBindingHandler|
+@@ -229,6 +238,7 @@
+   int32_t output_physical_width_mm_ = 0;
+   int32_t output_mode_width_ = 0;
+   bool device_pixel_ratio_locked_ = false;
++  double keyboard_inset_bottom_ = 0;
+ };
+ 
+ }  // namespace flutter
+--- a/src/flutter/shell/platform/linux_embedded/window_binding_handler_delegate.h
++++ b/src/flutter/shell/platform/linux_embedded/window_binding_handler_delegate.h
+@@ -17,6 +17,8 @@
+   // @param[in] height_px      Physical height of the window.
+   virtual void OnWindowSizeChanged(size_t width_px, size_t height_px) const = 0;
+ 
++  virtual void OnWindowMetricsChanged() const {}
++
+   // Notifies delegate that backing window mouse has moved. Typically called by
+   // currently configured WindowBindingHandler
+   // @param[in] x_px The x coordinate of the pointer event in physical pixels.
+--- a/src/flutter/shell/platform/linux_embedded/window_binding_handler.h
++++ b/src/flutter/shell/platform/linux_embedded/window_binding_handler.h
+@@ -22,6 +22,13 @@
+   size_t height;
+ };
+ 
++struct PhysicalViewInsets {
++  double top = 0;
++  double right = 0;
++  double bottom = 0;
++  double left = 0;
++};
++
+ using ELinuxRenderSurfaceTarget = SurfaceGl;
+ 
+ // Abstract class for binding Linux embedded platform windows to Flutter views.
+@@ -77,6 +84,13 @@
+       const bool show,
+       const std::string& input_type = "") = 0;
+ 
++  virtual PhysicalViewInsets GetViewInsets() { return {}; }
++
++  virtual void UpdateVirtualKeyboardArea(int32_t x,
++                                         int32_t y,
++                                         int32_t width,
++                                         int32_t height) {}
++
+   // Returns the clipboard data.
+   virtual std::string GetClipboardData() = 0;
+ 

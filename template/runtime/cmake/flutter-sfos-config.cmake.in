@@ -1,0 +1,23 @@
+# flutter-sfos CMake package (elinux runner / plugins).
+set(FLUTTER_SFOS_VERSION "@VERSION@")
+set(FLUTTER_SFOS_LIBDIR "@LIBDIR@")
+set(FLUTTER_SFOS_INCLUDEDIR "@INCLUDEDIR@")
+set(FLUTTER_SFOS_WRAPPERDIR "@WRAPPERDIR@")
+set(FLUTTER_SFOS_SDKDIR "@SDKDIR@")
+set(FLUTTER_SFOS_EXECDIR "@EXECDIR@")
+set(FLUTTER_SFOS_GEN_SNAPSHOT "${FLUTTER_SFOS_EXECDIR}/gen_snapshot")
+
+if(NOT TARGET flutter-sfos::engine)
+  add_library(flutter-sfos::engine SHARED IMPORTED)
+  set_target_properties(flutter-sfos::engine PROPERTIES
+    IMPORTED_LOCATION "${FLUTTER_SFOS_LIBDIR}/libflutter_engine.so"
+    INTERFACE_INCLUDE_DIRECTORIES "${FLUTTER_SFOS_INCLUDEDIR}")
+endif()
+
+if(NOT TARGET flutter-sfos::elinux)
+  add_library(flutter-sfos::elinux SHARED IMPORTED)
+  set_target_properties(flutter-sfos::elinux PROPERTIES
+    IMPORTED_LOCATION "${FLUTTER_SFOS_LIBDIR}/libflutter_elinux_wayland.so"
+    INTERFACE_INCLUDE_DIRECTORIES "${FLUTTER_SFOS_INCLUDEDIR}"
+    INTERFACE_LINK_LIBRARIES flutter-sfos::engine)
+endif()

@@ -1,0 +1,26 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -22,6 +22,7 @@ option(ENABLE_VSYNC "Enable embedder vsync" OFF)
+ option(BUILD_ELINUX_SO "Build .so file of elinux embedder" OFF)
+ option(ENABLE_ELINUX_EMBEDDER_LOG "Enable logger of eLinux embedder" ON)
+ option(FLUTTER_RELEASE "Build Flutter Engine with release mode" OFF)
++set(FLUTTER_SFOS_LIBDIR "" CACHE STRING "RPATH to the versioned flutter-sfos library directory")
+ 
+ if(NOT BUILD_ELINUX_SO)
+   # Load the user project.
+--- a/cmake/build.cmake
++++ b/cmake/build.cmake
+@@ -271,7 +271,13 @@ endif()
+ 
+ set(FLUTTER_EMBEDDER_LIB "${CMAKE_CURRENT_SOURCE_DIR}/build/libflutter_engine.so")
+ set(CMAKE_SKIP_RPATH true)
++if(FLUTTER_SFOS_LIBDIR)
++  set(CMAKE_SKIP_RPATH false)
++  set(CMAKE_BUILD_WITH_INSTALL_RPATH true)
++  set(CMAKE_INSTALL_RPATH "${FLUTTER_SFOS_LIBDIR}")
++  target_link_options(${TARGET} PRIVATE "-Wl,-rpath,${FLUTTER_SFOS_LIBDIR}")
++endif()
+ target_link_libraries(${TARGET}
+   PRIVATE
+     ${FLUTTER_EMBEDDER_LIB}
+ )
