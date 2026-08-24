@@ -10,6 +10,9 @@ zypper --non-interactive in --force-resolution \
 	pkgconfig \
 	binutils \
 	linux-glibc-devel \
+	git \
+	unzip \
+	curl \
 	'pkgconfig(xkbcommon)' \
 	'pkgconfig(wayland-client)' \
 	'pkgconfig(wayland-cursor)' \

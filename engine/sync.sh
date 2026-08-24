@@ -89,9 +89,13 @@ if [ "$got" != "$ENGINE_HASH" ]; then
 	exit 1
 fi
 
-# Dart SDK for this arch, baked into the same layer.
+# Dart SDK + default precache (all enabled platforms) baked into this layer
+# so the devel RPM does not download sky_engine / patched_sdk / host tools.
 "$DEST/bin/flutter" --version
+"$DEST/bin/flutter" precache
 test -x "$DEST/bin/cache/dart-sdk/bin/dartaotruntime"
+test -d "$DEST/bin/cache/pkg/sky_engine"
+test -d "$DEST/bin/cache/pkg/flutter_gpu"
 
 mkdir -p "$DEST/engine/src/out" "$DEST/bin/cache"
 chmod -R a+rwX "$DEST/bin/cache" "$DEST/engine/src/out"

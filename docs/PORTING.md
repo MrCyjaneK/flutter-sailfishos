@@ -40,8 +40,9 @@ You do **not** need the Flutter engine source in the app repo.
   From this repo: `make FLUTTER=<ver> runtime` → `versions/<ver>/runtime/rpms/`  
   `FLUTTER_SFOS_RPMS=/path/to/rpms ./elinux/build.sh`
 
-`-devel` ships the aarch64 Flutter SDK, `gen_snapshot`, and flutter-elinux.
-ExtraInstall `rpm -Uvh`s it, then `flutter-sfos-aot` (the elinux driver).
+`-devel` ships a full aarch64 Flutter SDK (real git checkout and default
+`flutter precache`), `gen_snapshot`, and flutter-elinux. ExtraInstall
+`rpm -Uvh`s it, then `flutter-sfos-aot` (the elinux driver).
 
 **On the phone**
 

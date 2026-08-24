@@ -1,5 +1,5 @@
 #!/bin/sh
-# Docker: native aarch64 release embedder + aarch64 gen_snapshot + slim SDK.
+# Docker: native aarch64 release embedder + aarch64 gen_snapshot + full SDK.
 # gclient lives in the image (flutter-sfos-engine:<ver>); ninja out/ is on disk.
 set -eu
 
@@ -19,13 +19,36 @@ IMAGE=${ENGINE_IMAGE:-flutter-sfos-engine:$FLUTTER}
 STAMP="$DEST/.hash"
 PLATFORM=linux/arm64
 
+sdk_complete() {
+	root=$1
+	[ -d "$root/.git/objects" ] || return 1
+	[ -x "$root/bin/flutter" ] || return 1
+	[ -x "$root/bin/cache/dart-sdk/bin/dartaotruntime" ] || return 1
+	[ -d "$root/bin/cache/pkg/sky_engine" ] || return 1
+	[ -d "$root/bin/cache/pkg/flutter_gpu" ] || return 1
+	[ -d "$root/bin/cache/artifacts/engine/linux-arm64" ] || return 1
+	[ -d "$root/dev" ] || return 1
+	[ -f "$root/packages/integration_test/android/src/main/java/dev/flutter/plugins/integration_test/IntegrationTestPlugin.java" ] || return 1
+}
+
+elinux_cache_ok() {
+	root=$1
+	[ -f "$root/bin/cache/elinux-sdk.stamp" ] || return 1
+	[ "$(tr -d '[:space:]' <"$root/bin/cache/elinux-sdk.stamp")" = "$ENGINE_HASH" ] || return 1
+	for d in elinux-common \
+		elinux-arm64-debug elinux-arm64-profile elinux-arm64-release \
+		elinux-x64-debug elinux-x64-profile elinux-x64-release
+	do
+		[ -d "$root/bin/cache/artifacts/engine/$d" ] || return 1
+	done
+}
+
 already() {
 	[ -f "$DEST/libflutter_engine.so" ] || return 1
 	[ -f "$DEST/icudtl.dat" ] || return 1
 	[ -f "$DEST/flutter_embedder.h" ] || return 1
 	[ -x "$DEST/bin/gen_snapshot" ] || return 1
-	[ -x "$DEST/sdk/bin/flutter" ] || return 1
-	[ -x "$DEST/sdk/bin/cache/dart-sdk/bin/dartaotruntime" ] || return 1
+	sdk_complete "$DEST/sdk" || return 1
 	[ "$(cat "$DEST/.arch" 2>/dev/null || true)" = aarch64 ] || return 1
 	got=$(cat "$STAMP" 2>/dev/null || true)
 	if [ -z "$got" ]; then
@@ -40,10 +63,17 @@ copy_runtime_bits() {
 	cp -a "$DEST/flutter_embedder.h" "$DEST/libflutter_engine.so" "$DEST/icudtl.dat" \
 		"$RUNTIME_ENGINE/"
 	cp -a "$DEST/bin/gen_snapshot" "$VERDIR/runtime/bin/"
-	if [ "${FORCE:-}" = 1 ] || [ ! -x "$VERDIR/runtime/sdk/bin/flutter" ]; then
+	if [ "${FORCE:-}" = 1 ] || ! sdk_complete "$VERDIR/runtime/sdk" || ! elinux_cache_ok "$VERDIR/runtime/sdk"; then
 		rm -rf "$VERDIR/runtime/sdk"
 		cp -a "$DEST/sdk" "$VERDIR/runtime/sdk"
 	fi
+}
+
+finish() {
+	"$ROOT/scripts/fetch-elinux-artifacts.sh"
+	copy_runtime_bits
+	printf '%s\n' "$ENGINE_HASH" >"$STAMP"
+	echo "engine $ENGINE_HASH ($FLUTTER, aarch64) -> $DEST"
 }
 
 if [ "${FORCE:-}" != 1 ] && already; then
@@ -53,7 +83,7 @@ if [ "${FORCE:-}" != 1 ] && already; then
 		ls -lh "$DEST/libflutter_engine.so" "$DEST/icudtl.dat" \
 			"$DEST/bin/gen_snapshot" "$DEST/flutter_embedder.h"
 	fi
-	copy_runtime_bits
+	finish
 	exit 0
 fi
 
@@ -88,7 +118,5 @@ test -x "$DEST/bin/gen_snapshot"
 test -x "$DEST/sdk/bin/flutter"
 test "$(cat "$DEST/.arch")" = aarch64
 
-copy_runtime_bits
-printf '%s\n' "$ENGINE_HASH" >"$STAMP"
+finish
 
-echo "engine $ENGINE_HASH ($FLUTTER, aarch64) -> $DEST"

@@ -30,29 +30,21 @@ export FLUTTER_ROOT=$SDK
 export PATH=$SDK/bin:$PATH
 export CI=true
 export FLUTTER_SUPPRESS_ANALYTICS=true
-export PUB_CACHE=${PUB_CACHE:-$APP/.dart_tool/pub-cache}
+export HOME=/root
+export PUB_CACHE=$HOME/.pub-cache
 export CC=${CC:-clang}
 export CXX=${CXX:-clang++}
 mkdir -p "$PUB_CACHE"
 
-# rpm -Uvh may leave the SDK / flutter-elinux tree read-only.
+# rpm -Uvh may leave the SDK / flutter-elinux tree read-only; overlays write
+# engine .so files into the cache.
 chmod -R u+w "$SDK" "$ELINUX" 2>/dev/null || true
 
-# Packaged SDK has no real .git. The flutter wrapper and `git log` need a repo;
-# keep flutter_tools.stamp in sync so the tool snapshot is reused.
 if [ ! -d "$SDK/.git/objects" ]; then
-	rm -rf "$SDK/.git"
-	git -C "$SDK" init --quiet
-	git -C "$SDK" \
-		-c user.email=sdk@flutter-sfos \
-		-c user.name=flutter-sfos \
-		commit --allow-empty --quiet -m "flutter-sfos packaged SDK"
-	if [ -f "$SDK/bin/cache/flutter_tools.stamp" ]; then
-		rest=$(cut -d: -f2- "$SDK/bin/cache/flutter_tools.stamp")
-		printf '%s:%s\n' "$(git -C "$SDK" rev-parse HEAD)" "$rest" \
-			>"$SDK/bin/cache/flutter_tools.stamp"
-	fi
+	echo "flutter-sfos-aot: $SDK is missing a real git repository" >&2
+	exit 1
 fi
+git config --global --add safe.directory "$SDK" || true
 if [ -f "$SDK/bin/internal/engine.version" ]; then
 	FLUTTER_PREBUILT_ENGINE_VERSION=$(tr -d '[:space:]' <"$SDK/bin/internal/engine.version")
 	export FLUTTER_PREBUILT_ENGINE_VERSION
@@ -73,6 +65,15 @@ if [ "$got" != "$VER" ]; then
 	exit 1
 fi
 
+# Packaged SDK must already have elinux-* artifacts. Do not hit GitHub.
+export ELINUX_ENGINE_BASE_URL=http://127.0.0.1:1/flutter-sfos-no-elinux-download
+if [ ! -d "$SDK/bin/cache/artifacts/engine/elinux-common" ] || \
+	[ ! -d "$SDK/bin/cache/artifacts/engine/elinux-arm64-release" ] || \
+	[ ! -f "$SDK/bin/cache/elinux-sdk.stamp" ]; then
+	echo "flutter-sfos-aot: missing packaged elinux artifacts under $SDK/bin/cache" >&2
+	exit 1
+fi
+
 # NativeBundle runs `nproc` with no fallback.
 if ! command -v nproc >/dev/null 2>&1; then
 	mkdir -p "$APP/.dart_tool/bin"
@@ -82,9 +83,8 @@ if ! command -v nproc >/dev/null 2>&1; then
 	export PATH="$APP/.dart_tool/bin:$PATH"
 fi
 
-# Skip flutter-elinux's bash wrapper: update_flutter would fetch a second SDK
-# because our empty-commit HEAD != bin/internal/flutter.version. Drive the
-# snapshot instead; Cache.flutterRoot is flutter-elinux/flutter -> our SDK.
+# Drive flutter-elinux via its snapshot. The bash wrapper's update_flutter
+# can fetch another SDK; Cache.flutterRoot is flutter-elinux/flutter -> ours.
 ln -sfn "$SDK" "$ELINUX/flutter"
 mkdir -p "$ELINUX/bin/cache"
 if [ ! -s "$SNAPSHOT" ] || [ ! -f "$ELINUX/.dart_tool/package_config.json" ]; then
@@ -103,16 +103,16 @@ elinux() {
 		"$SNAPSHOT" "$@"
 }
 
-# Sony zips (headers, wrapper, icu) + linux-desktop gen_snapshot on arm64.
-elinux precache --elinux --linux || {
-	elinux precache --elinux
-	flutter precache --linux || true
-}
+cd "$APP"
+elinux clean
+elinux pub get
 
-# Overlay our --embedder-for-target engine, SFOS-patched wayland .so, and
-# aarch64 gen_snapshot. flutter-elinux copies these into ephemeral/ and links.
+# Overlay after pub get so a cache refresh cannot replace our .so.
+# flutter-elinux copies these into ephemeral/ and links.
 cache=$SDK/bin/cache/artifacts/engine
 rel=$cache/elinux-arm64-release
+test -d "$cache/elinux-common"
+test -d "$rel"
 mkdir -p "$rel" "$rel/linux-arm64" "$cache/linux-arm64-release"
 cp -f "$LIB/libflutter_engine.so" "$rel/libflutter_engine.so"
 cp -f "$LIB/libflutter_elinux_wayland.so" "$rel/libflutter_elinux_wayland.so"
@@ -123,9 +123,6 @@ chmod +x "$cache/linux-arm64-release/gen_snapshot" "$rel/linux-arm64/gen_snapsho
 find "$cache" -type f -name gen_snapshot -exec cp -f "$SNAP" {} \;
 find "$cache" -type f -name gen_snapshot -exec chmod +x {} \;
 
-cd "$APP"
-elinux clean
-elinux pub get
 elinux build elinux --release --target-arch=arm64 --target-backend-type=wayland
 
 src=$APP/build/elinux/arm64/release/bundle

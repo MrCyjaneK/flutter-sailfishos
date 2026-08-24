@@ -1,6 +1,6 @@
 #!/bin/sh
-# Native aarch64: libflutter_engine.so + gen_snapshot + a slim Flutter SDK
-# for flutter-sfos-<ver>-devel (runs inside sfosbuild).
+# Native aarch64: libflutter_engine.so + gen_snapshot + a full Flutter SDK
+# (real .git, default precache) for flutter-sfos-<ver>-devel.
 #
 # Flutter + gclient live in the image at /opt/flutter (see sync.sh).
 # Input env:
@@ -108,7 +108,10 @@ test -f "$EMBEDDER_H"
 
 export PATH="$FLUTTER_ROOT/bin:$PATH"
 "$FLUTTER_ROOT/bin/flutter" --version
+"$FLUTTER_ROOT/bin/flutter" precache
 test -x "$FLUTTER_ROOT/bin/cache/dart-sdk/bin/dartaotruntime"
+test -d "$FLUTTER_ROOT/bin/cache/pkg/sky_engine"
+test -d "$FLUTTER_ROOT/.git/objects"
 
 patched_src=
 for d in \
@@ -123,60 +126,49 @@ do
 	fi
 done
 if [ -z "$patched_src" ]; then
-	"$FLUTTER_ROOT/bin/flutter" precache --linux || true
-	for d in \
-		"$FLUTTER_ROOT/bin/cache/artifacts/engine/common/flutter_patched_sdk_product" \
-		"$FLUTTER_ROOT/bin/cache/artifacts/engine/common/flutter_patched_sdk"
-	do
-		if [ -d "$d" ]; then
-			patched_src=$d
-			break
-		fi
-	done
-fi
-if [ -z "$patched_src" ]; then
 	echo "engine: missing flutter_patched_sdk" >&2
 	exit 1
 fi
 
-mkdir -p /out/bin /out/sdk
+mkdir -p /out/bin
+rm -rf /out/sdk
+mkdir -p /out/sdk
 install -m 755 "$OUT/libflutter_engine.so" /out/libflutter_engine.so
 install -m 644 "$OUT/icudtl.dat" /out/icudtl.dat
 install -m 644 "$EMBEDDER_H" /out/flutter_embedder.h
 install -m 755 "$snap" /out/bin/gen_snapshot
 printf 'aarch64\n' >/out/.arch
 
-# Slim SDK: flutter tool + dart-sdk + packages. Engine source stays in the image.
+# Full Flutter SDK: real .git, packages, dev/, default precache cache.
+# Drop gclient's ./engine tree (engine/src plus the tiny flutter.git stub).
+# Excluding only engine/src leaves thousands of D files in git status.
+# Patterns must be ./path — --exclude=engine also drops
+# bin/cache/artifacts/engine (linux-arm64, patched_sdk, …).
 tar -C "$FLUTTER_ROOT" \
-	--exclude=.git \
-	--exclude=engine \
-	--exclude=.github \
-	--exclude=dev \
-	--exclude=examples \
-	--exclude=docs \
-	--exclude=bin/cache/downloads \
-	--exclude=bin/cache/artifacts/engine/android \
-	--exclude=bin/cache/artifacts/engine/ios \
-	--exclude=bin/cache/artifacts/engine/darwin \
-	--exclude=bin/cache/artifacts/engine/windows \
-	--exclude=bin/cache/artifacts/engine/linux-x64 \
+	--exclude=./engine \
+	--exclude=./_bad_scm \
+	--exclude=./.gclient \
+	--exclude=./.gclient_entries \
+	--exclude=./.gclient_previous_sync_commits \
+	--exclude=./bin/cache/downloads \
 	-cf - . | tar -C /out/sdk -xf -
 
 mkdir -p /out/sdk/bin/cache/artifacts/engine/common
 rm -rf /out/sdk/bin/cache/artifacts/engine/common/flutter_patched_sdk_product
 cp -a "$patched_src" /out/sdk/bin/cache/artifacts/engine/common/flutter_patched_sdk_product
 
+test -d /out/sdk/.git/objects
 test -x /out/sdk/bin/flutter
 test -x /out/sdk/bin/cache/dart-sdk/bin/dartaotruntime
+test -d /out/sdk/bin/cache/pkg/sky_engine
+test -d /out/sdk/bin/cache/pkg/flutter_gpu
+test -d /out/sdk/bin/cache/artifacts/engine/linux-arm64
+test -d /out/sdk/bin/cache/artifacts/engine/common/flutter_patched_sdk
 test -d /out/sdk/bin/cache/artifacts/engine/common/flutter_patched_sdk_product
-
-# flutter tool requires $FLUTTER_ROOT/.git (we stripped the real one).
-mkdir -p /out/sdk/.git
-rev=$(git -C "$FLUTTER_ROOT" rev-parse HEAD 2>/dev/null || true)
-if [ -z "$rev" ] && [ -f /out/sdk/bin/cache/flutter_tools.stamp ]; then
-	rev=$(cut -d: -f1 /out/sdk/bin/cache/flutter_tools.stamp)
-fi
-printf '%s\n' "${rev:-$HASH}" >/out/sdk/.git/HEAD
+test -d /out/sdk/dev
+test ! -d /out/sdk/engine
+test ! -d /out/sdk/_bad_scm
+test -f /out/sdk/packages/integration_test/android/src/main/java/dev/flutter/plugins/integration_test/IntegrationTestPlugin.java
 
 if [ -n "${HOST_UID:-}" ]; then
 	chown -R "$HOST_UID:${HOST_GID:-$HOST_UID}" /out

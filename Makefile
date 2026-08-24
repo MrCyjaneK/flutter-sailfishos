@@ -51,7 +51,7 @@ $(ENGINE_SO):
 embedder:
 	./scripts/fetch-embedder.sh
 
-runtime: $(ENGINE_SO) embedder
+runtime: engine embedder
 	mkdir -p $(RUNTIME)/rpm $(RUNTIME)/cmake
 	$(stamp) template/runtime/flutter-sfos.spec.in > $(RUNTIME)/rpm/flutter-sfos.spec
 	$(stamp) template/runtime/flutter-sfos-aot.sh.in > $(RUNTIME)/flutter-sfos-aot

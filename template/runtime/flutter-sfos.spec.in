@@ -2,6 +2,12 @@
 # build-id notes; Sailfish find-debuginfo always uses --strict-build-id.
 %global debug_package %{nil}
 
+# Precache cache is full of ELF that must not become RPM Requires on aarch64:
+# android linux-x64 gen_snapshot (ld-linux-x86-64.so.2) and
+# linux-arm64 libflutter_linux_gtk.so (libgtk-3, libatk, libepoxy, …).
+%global __requires_exclude_from %{_datadir}/flutter-sfos/.*
+%global __provides_exclude_from %{_datadir}/flutter-sfos/.*
+
 Name:           flutter-sfos-@FLUTTER_VERSION@
 Version:        @FLUTTER_VERSION@
 Release:        @RELEASE@
@@ -36,11 +42,17 @@ libflutter_engine.so and libflutter_elinux_wayland.so from this RPM.
 %package devel
 Summary:        Headers, flutter-elinux, and AOT toolchain for Flutter %{version}
 Requires:       %{name} = %{version}-%{release}
+Requires:       git
+Requires:       unzip
+Requires:       curl
+# Bundled SDK/cache ELF is not linked against the Sailfish sysroot.
+AutoReqProv:    no
 
 %description devel
-Headers, cpp_client_wrapper, CMake package, aarch64 gen_snapshot, a slim
-Flutter SDK, and flutter-elinux so an app's ExtraInstall can run
-`flutter-elinux build elinux` (our engine/embedder .so overlay the cache).
+Headers, cpp_client_wrapper, CMake package, aarch64 gen_snapshot, a full
+Flutter SDK (real git checkout + default precache), and flutter-elinux so
+an app's ExtraInstall can run `flutter-elinux build elinux` (our
+engine/embedder .so overlay the cache).
 
 %prep
 %setup -q
