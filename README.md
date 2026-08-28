@@ -2,6 +2,10 @@
 
 > I mean Silica is cool but there are things that go out of Qt5.6 fork that I may want to do...
 
+## Downloads
+
+- [3.41.9](https://github.com/MrCyjaneK/flutter-sailfishos/releases/tag/3.41.9-13)
+- [3.44.0](https://github.com/MrCyjaneK/flutter-sailfishos/releases/tag/3.44.0-7)
 ## About
 
 Versions in `versions/<ver>/pin.env`: **3.41.9**, **3.44.0**. Pass `FLUTTER=`
@@ -62,7 +66,7 @@ into the app, then `./elinux/build.sh`.
 mkdir versions/X.Y.Z
 cp versions/3.44.0/pin.env versions/X.Y.Z/pin.env
 ln -s 3.44.0 patches/X.Y.Z          # or a real dir if patches change
-# edit ENGINE_HASH (and EMBEDDER_REV / ELINUX_REV if those moved)
+# edit ENGINE_HASH / ELINUX_ENGINE_HASH (and EMBEDDER_REV / ELINUX_REV if those moved)
 make FLUTTER=X.Y.Z engine runtime
 ```
 
@@ -70,7 +74,7 @@ make FLUTTER=X.Y.Z engine runtime
 
 ```
 Makefile                            # engine / runtime / hello / deploy
-versions/<ver>/pin.env              # ENGINE_HASH, EMBEDDER_REV, ELINUX_REV, RELEASE
+versions/<ver>/pin.env              # ENGINE_HASH, ELINUX_ENGINE_HASH, EMBEDDER_REV, ELINUX_REV, RELEASE
 patches/<ver>/                      # embedder diffs; symlink to a previous ver if unchanged
 engine/                             # Dockerfile (linux/arm64)
 examples/hello/                     # sample app; `./elinux/build.sh` → sfosbuild .

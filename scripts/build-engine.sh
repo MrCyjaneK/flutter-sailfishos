@@ -34,7 +34,7 @@ sdk_complete() {
 elinux_cache_ok() {
 	root=$1
 	[ -f "$root/bin/cache/elinux-sdk.stamp" ] || return 1
-	[ "$(tr -d '[:space:]' <"$root/bin/cache/elinux-sdk.stamp")" = "$ENGINE_HASH" ] || return 1
+	[ "$(tr -d '[:space:]' <"$root/bin/cache/elinux-sdk.stamp")" = "$ELINUX_ENGINE_HASH" ] || return 1
 	for d in elinux-common \
 		elinux-arm64-debug elinux-arm64-profile elinux-arm64-release \
 		elinux-x64-debug elinux-x64-profile elinux-x64-release

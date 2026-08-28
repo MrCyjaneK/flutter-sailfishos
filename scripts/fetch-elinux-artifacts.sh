@@ -4,6 +4,8 @@
 #
 # Artifacts live at $FLUTTER_ROOT/bin/cache/artifacts/engine/elinux-* with
 # stamp bin/cache/elinux-sdk.stamp (see flutter-elinux lib/elinux_cache.dart).
+# Zip tag and stamp are ELINUX_ENGINE_HASH (flutter-elinux engine.version),
+# not the Flutter SDK ENGINE_HASH.
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
@@ -13,7 +15,7 @@ ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 SDK=${ELINUX_ARTIFACTS_SDK:-$VERDIR/engine/sdk}
 CACHE=$SDK/bin/cache/artifacts/engine
 STAMP=$SDK/bin/cache/elinux-sdk.stamp
-SHORT=$(printf '%s' "$ENGINE_HASH" | cut -c1-10)
+SHORT=$(printf '%s' "$ELINUX_ENGINE_HASH" | cut -c1-10)
 BASE=https://github.com/flutter-elinux/flutter-embedded-linux/releases/download/$SHORT
 DL=${ELINUX_ARTIFACTS_CACHE:-$ROOT/.cache/elinux-artifacts/$SHORT}
 
@@ -36,7 +38,7 @@ fi
 
 up_to_date() {
 	[ -f "$STAMP" ] || return 1
-	[ "$(tr -d '[:space:]' <"$STAMP")" = "$ENGINE_HASH" ] || return 1
+	[ "$(tr -d '[:space:]' <"$STAMP")" = "$ELINUX_ENGINE_HASH" ] || return 1
 	for d in $ARTIFACTS; do
 		[ -d "$CACHE/$d" ] || return 1
 	done
@@ -76,5 +78,5 @@ for d in $ARTIFACTS; do
 	test -d "$CACHE/$d"
 done
 
-printf '%s\n' "$ENGINE_HASH" >"$STAMP"
+printf '%s\n' "$ELINUX_ENGINE_HASH" >"$STAMP"
 echo "elinux-artifacts $SHORT ok"

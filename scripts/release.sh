@@ -14,7 +14,8 @@ function ensure_gh_release() {
 function has_gh_release_asset() {
     local release=$1
     local asset=$2
-    gh release view $release --jq ".assets[] | select(.name == \"$asset\")" > /dev/null 2>&1
+    gh release view -R "$REPO" "$release" --json assets --jq '.assets[].name' \
+        | grep -Fxq "$asset"
 }
 
 pushd versions

@@ -21,3 +21,6 @@ fi
 # shellcheck disable=SC1091
 . "$VERDIR/pin.env"
 FLUTTER_VERSION=$FLUTTER
+# flutter-elinux zips are tagged with its bin/internal/engine.version, which
+# can differ from the Flutter SDK ENGINE_HASH.
+ELINUX_ENGINE_HASH=${ELINUX_ENGINE_HASH:-$ENGINE_HASH}
