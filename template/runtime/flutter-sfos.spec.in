@@ -36,12 +36,12 @@ Provides:       flutter-sfos = %{version}
 Versioned Flutter embedder for Sailfish OS. Installs data into
 /usr/lib/flutter-sfos/%{version} so several Flutter versions can
 coexist.
-Apps Require: flutter-sfos-%{version}. The app runner loads
+Apps Require: flutter-sfos-%{version} = %{version} (any release). The app runner loads
 libflutter_engine.so and libflutter_elinux_wayland.so from this RPM.
 
 %package devel
 Summary:        Headers, flutter-elinux, and AOT toolchain for Flutter %{version}
-Requires:       %{name} = %{version}-%{release}
+Requires:       %{name} = %{version}
 Requires:       git
 Requires:       unzip
 Requires:       curl

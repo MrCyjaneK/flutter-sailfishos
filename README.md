@@ -19,7 +19,7 @@ Google’s `linux-arm64-embedder.zip` is debug/JIT and will not load AOT
 `libapp.so`.
 
 Runtimes install side by side under `/usr/lib64/flutter-sfos/<version>/`.
-Apps `Requires:` the exact RPM they were AOT-compiled against.
+Apps `Requires:` `flutter-sfos-<version> = <version>` (any release of that Flutter version).
 App ExtraInstall is stock `flutter-elinux build elinux`; we overlay our
 engine/embedder `.so` in the cache and omit those copies from the app RPM.
 

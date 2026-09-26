@@ -1,7 +1,7 @@
 # Native aarch64 so gen_snapshot can run inside sfosbuild.
 # Oldest glibc that still has a working clang/python for the engine.
 # The .so will load on Sailfish OS 5.1 (glibc 2.41).
-FROM --platform=linux/arm64 debian:bullseye-slim
+FROM --platform=linux/arm64 debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 

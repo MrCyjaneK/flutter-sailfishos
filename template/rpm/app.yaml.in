@@ -12,7 +12,7 @@ Description: |
 Configure: none
 Builder: none
 Requires:
-- flutter-sfos-@FLUTTER_VERSION@
+- flutter-sfos-@FLUTTER_VERSION@ = @FLUTTER_VERSION@
 PkgBR:
 - clang
 - cmake
