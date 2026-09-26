@@ -57,7 +57,17 @@ runtime: engine embedder
 	$(stamp) template/runtime/flutter-sfos-aot.sh.in > $(RUNTIME)/flutter-sfos-aot
 	chmod +x $(RUNTIME)/flutter-sfos-aot
 	cp -f template/runtime/cmake/flutter-sfos-config.cmake.in $(RUNTIME)/cmake/
-	sfosbuild $(SFOS) $(ARCH) $(RUNTIME)
+	@set -e; \
+	for d in $(RUNTIME) $(RUNTIME)/build-client $(RUNTIME)/build-so $(RUNTIME)/src/flutter-embedded-linux; do \
+		if [ -f "$$d/Makefile" ]; then \
+			$(MAKE) -C "$$d" clean; \
+			if $(MAKE) -C "$$d" -n distclean >/dev/null 2>&1; then \
+				$(MAKE) -C "$$d" distclean; \
+			fi; \
+		fi; \
+	done; \
+	rm -rf $(RUNTIME)/build-client $(RUNTIME)/build-so
+	sfosbuild --in-place $(SFOS) $(ARCH) $(RUNTIME)
 
 hello: runtime
 	FLUTTER_VERSION=$(FLUTTER) \

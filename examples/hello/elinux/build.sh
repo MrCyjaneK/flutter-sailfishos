@@ -45,7 +45,22 @@ cp -f "$(ls -t "$RPMS"/flutter-sfos-"$FLUTTER_VERSION"-"$FLUTTER_VERSION"-*.aarc
 	"$(ls -t "$RPMS"/flutter-sfos-"$FLUTTER_VERSION"-devel-"$FLUTTER_VERSION"-*.aarch64.rpm | grep -v debug | head -1)" \
 	./
 
-sfosbuild "$SFOS" "$ARCH" .
+# In-place rpmbuild packages this tree. Drop a previous arch's build first.
+if [ -f Makefile ]; then
+	make clean
+	if make -n distclean >/dev/null 2>&1; then
+		make distclean
+	fi
+fi
+if [ -f build/elinux/Makefile ]; then
+	make -C build/elinux clean
+	if make -C build/elinux -n distclean >/dev/null 2>&1; then
+		make -C build/elinux distclean
+	fi
+fi
+rm -rf build
+
+sfosbuild --in-place "$SFOS" "$ARCH" .
 
 if [ "${1:-}" = deploy ]; then
 	sfosbuild deploy "$DEVICE" .
