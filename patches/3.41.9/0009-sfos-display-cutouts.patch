@@ -1,0 +1,404 @@
+Tell apps where the display cut-outs are (needs 0007 and 0008).
+
+Reads Silica's /desktop/sailfish/silica/cutouts from dconf (set by the device
+adaptation, e.g. [[310, 0, 414, 66]] = [x, y, width, height] in native panel
+pixels). Fullscreen wl_shell windows cover the whole panel, so for those the
+cut-outs are mapped into view coordinates for the current rotation and sent
+on the JSON message channel flutter-sfos/display_cutouts, together with the
+padding that keeps content clear of them (physical pixels):
+
+  {"version": 1,
+   "padding": {"top": 66, "right": 0, "bottom": 0, "left": 0},
+   "cutouts": [{"left": 310, "top": 0, "width": 414, "height": 66}]}
+
+Sent once the engine is running and again when the orientation or window size
+changes; repeats are skipped. xdg_shell windows get no cut-outs, because
+Lipstick already keeps them clear.
+
+The embedder API has no view padding, so apps apply it themselves (see
+docs/PORTING.md).
+
+diff --git a/cmake/build.cmake b/cmake/build.cmake
+index 332e203..120368a 100644
+--- a/cmake/build.cmake
++++ b/cmake/build.cmake
+@@ -157,6 +157,7 @@ set(ELINUX_COMMON_SRC
+   "src/flutter/shell/platform/linux_embedded/external_texture_egl_image.cc"
+   "src/flutter/shell/platform/linux_embedded/vsync_waiter.cc"
+   "src/flutter/shell/platform/linux_embedded/flutter_elinux_texture_registrar.cc"
++  "src/flutter/shell/platform/linux_embedded/plugins/display_cutout_plugin.cc"
+   "src/flutter/shell/platform/linux_embedded/plugins/keyboard_glfw_util.cc"
+   "src/flutter/shell/platform/linux_embedded/plugins/key_event_plugin.cc"
+   "src/flutter/shell/platform/linux_embedded/plugins/lifecycle_plugin.cc"
+diff --git a/src/flutter/shell/platform/linux_embedded/flutter_elinux_view.cc b/src/flutter/shell/platform/linux_embedded/flutter_elinux_view.cc
+index d933a3f..960c65b 100644
+--- a/src/flutter/shell/platform/linux_embedded/flutter_elinux_view.cc
++++ b/src/flutter/shell/platform/linux_embedded/flutter_elinux_view.cc
+@@ -85,6 +85,8 @@ void FlutterELinuxView::SetEngine(std::unique_ptr<FlutterELinuxEngine> engine) {
+       std::make_unique<flutter::PlatformViewsPlugin>(internal_plugin_messenger);
+   settings_handler_ = std::make_unique<flutter::SettingsPlugin>(
+       internal_plugin_messenger, binding_handler_.get());
++  display_cutout_handler_ = std::make_unique<flutter::DisplayCutoutPlugin>(
++      internal_plugin_messenger, binding_handler_.get());
+ 
+   PhysicalWindowBounds bounds = binding_handler_->GetPhysicalWindowBounds();
+   SendWindowMetrics(bounds.width, bounds.height,
+@@ -113,6 +115,9 @@ void FlutterELinuxView::OnWindowSizeChanged(size_t width_px,
+     return;
+   }
+   SendWindowMetrics(width_px, height_px, binding_handler_->GetDpiScale());
++  if (display_cutout_handler_) {
++    display_cutout_handler_->SendDisplayCutouts();
++  }
+ }
+ 
+ void FlutterELinuxView::OnWindowMetricsChanged() const {
+@@ -125,6 +130,9 @@ void FlutterELinuxView::OnContentOrientationChanged() {
+   if (textinput_handler_) {
+     textinput_handler_->OnContentOrientationChanged();
+   }
++  if (display_cutout_handler_) {
++    display_cutout_handler_->SendDisplayCutouts();
++  }
+ }
+ 
+ void FlutterELinuxView::OnPointerMove(double x_px, double y_px) {
+@@ -412,6 +420,10 @@ void FlutterELinuxView::SendInitialBounds() {
+   PhysicalWindowBounds bounds = binding_handler_->GetPhysicalWindowBounds();
+   SendWindowMetrics(bounds.width, bounds.height,
+                     binding_handler_->GetDpiScale());
++  // The shell is only chosen once the render surface exists.
++  if (display_cutout_handler_) {
++    display_cutout_handler_->SendDisplayCutouts();
++  }
+ }
+ 
+ // Set's |event_data|'s phase to either kMove or kHover depending on the current
+diff --git a/src/flutter/shell/platform/linux_embedded/flutter_elinux_view.h b/src/flutter/shell/platform/linux_embedded/flutter_elinux_view.h
+index bff9d15..5aeb25b 100644
+--- a/src/flutter/shell/platform/linux_embedded/flutter_elinux_view.h
++++ b/src/flutter/shell/platform/linux_embedded/flutter_elinux_view.h
+@@ -13,6 +13,7 @@
+ #include "flutter/shell/platform/embedder/embedder.h"
+ #include "flutter/shell/platform/linux_embedded/flutter_elinux_engine.h"
+ #include "flutter/shell/platform/linux_embedded/flutter_elinux_state.h"
++#include "flutter/shell/platform/linux_embedded/plugins/display_cutout_plugin.h"
+ #include "flutter/shell/platform/linux_embedded/plugins/key_event_plugin.h"
+ #include "flutter/shell/platform/linux_embedded/plugins/lifecycle_plugin.h"
+ #include "flutter/shell/platform/linux_embedded/plugins/mouse_cursor_plugin.h"
+@@ -312,6 +313,9 @@ class FlutterELinuxView : public WindowBindingHandlerDelegate {
+   // Handler for flutter/settings channel.
+   std::unique_ptr<flutter::SettingsPlugin> settings_handler_;
+ 
++  // Handler for flutter-sfos/display_cutouts channel.
++  std::unique_ptr<flutter::DisplayCutoutPlugin> display_cutout_handler_;
++
+   // Currently configured WindowBindingHandler for view.
+   std::unique_ptr<flutter::WindowBindingHandler> binding_handler_;
+ 
+diff --git a/src/flutter/shell/platform/linux_embedded/plugins/display_cutout_plugin.cc b/src/flutter/shell/platform/linux_embedded/plugins/display_cutout_plugin.cc
+new file mode 100644
+index 0000000..9196e09
+--- /dev/null
++++ b/src/flutter/shell/platform/linux_embedded/plugins/display_cutout_plugin.cc
+@@ -0,0 +1,76 @@
++// Copyright 2023 Sony Corporation. All rights reserved.
++// Copyright 2013 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "flutter/shell/platform/linux_embedded/plugins/display_cutout_plugin.h"
++
++#include "flutter/shell/platform/common/json_message_codec.h"
++#include "flutter/shell/platform/linux_embedded/logger.h"
++
++namespace flutter {
++
++namespace {
++constexpr char kChannelName[] = "flutter-sfos/display_cutouts";
++
++// Bumped on incompatible changes to the message.
++constexpr int kMessageVersion = 1;
++
++constexpr char kVersion[] = "version";
++constexpr char kPadding[] = "padding";
++constexpr char kCutouts[] = "cutouts";
++constexpr char kTop[] = "top";
++constexpr char kRight[] = "right";
++constexpr char kBottom[] = "bottom";
++constexpr char kLeft[] = "left";
++constexpr char kWidth[] = "width";
++constexpr char kHeight[] = "height";
++}  // namespace
++
++DisplayCutoutPlugin::DisplayCutoutPlugin(BinaryMessenger* messenger,
++                                         WindowBindingHandler* delegate)
++    : channel_(std::make_unique<BasicMessageChannel<rapidjson::Document>>(
++          messenger,
++          kChannelName,
++          &JsonMessageCodec::GetInstance())),
++      delegate_(delegate) {}
++
++void DisplayCutoutPlugin::SendDisplayCutouts() {
++  const DisplayCutouts cutouts = delegate_->GetDisplayCutouts();
++
++  rapidjson::Document message(rapidjson::kObjectType);
++  auto& allocator = message.GetAllocator();
++  message.AddMember(kVersion, kMessageVersion, allocator);
++
++  rapidjson::Value padding(rapidjson::kObjectType);
++  padding.AddMember(kTop, cutouts.padding.top, allocator);
++  padding.AddMember(kRight, cutouts.padding.right, allocator);
++  padding.AddMember(kBottom, cutouts.padding.bottom, allocator);
++  padding.AddMember(kLeft, cutouts.padding.left, allocator);
++  message.AddMember(kPadding, padding, allocator);
++
++  rapidjson::Value rects(rapidjson::kArrayType);
++  for (const auto& r : cutouts.rects) {
++    rapidjson::Value rect(rapidjson::kObjectType);
++    rect.AddMember(kLeft, r.left, allocator);
++    rect.AddMember(kTop, r.top, allocator);
++    rect.AddMember(kWidth, r.width, allocator);
++    rect.AddMember(kHeight, r.height, allocator);
++    rects.PushBack(rect, allocator);
++  }
++  message.AddMember(kCutouts, rects, allocator);
++
++  // A rotation and the resize that follows it both ask; send each state once.
++  if (message == last_message_) {
++    return;
++  }
++  last_message_.CopyFrom(message, last_message_.GetAllocator());
++
++  ELINUX_LOG(INFO) << "Display cut-out padding: top " << cutouts.padding.top
++                   << ", right " << cutouts.padding.right << ", bottom "
++                   << cutouts.padding.bottom << ", left "
++                   << cutouts.padding.left;
++  channel_->Send(message);
++}
++
++}  // namespace flutter
+diff --git a/src/flutter/shell/platform/linux_embedded/plugins/display_cutout_plugin.h b/src/flutter/shell/platform/linux_embedded/plugins/display_cutout_plugin.h
+new file mode 100644
+index 0000000..fe7a355
+--- /dev/null
++++ b/src/flutter/shell/platform/linux_embedded/plugins/display_cutout_plugin.h
+@@ -0,0 +1,42 @@
++// Copyright 2023 Sony Corporation. All rights reserved.
++// Copyright 2013 The Flutter Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef FLUTTER_SHELL_PLATFORM_LINUX_EMBEDDED_PLUGINS_DISPLAY_CUTOUT_PLUGIN_H_
++#define FLUTTER_SHELL_PLATFORM_LINUX_EMBEDDED_PLUGINS_DISPLAY_CUTOUT_PLUGIN_H_
++
++#include <rapidjson/document.h>
++
++#include <memory>
++
++#include "flutter/shell/platform/common/client_wrapper/include/flutter/basic_message_channel.h"
++#include "flutter/shell/platform/common/client_wrapper/include/flutter/binary_messenger.h"
++#include "flutter/shell/platform/linux_embedded/window_binding_handler.h"
++
++namespace flutter {
++
++// Tells Flutter where the display cut-outs are.
++//
++// The embedder API has no view padding, so this sends the cut-outs and the
++// padding that avoids them (physical pixels, current orientation) for the app
++// to apply itself, e.g. by wrapping MediaQuery.
++class DisplayCutoutPlugin {
++ public:
++  explicit DisplayCutoutPlugin(BinaryMessenger* messenger,
++                               WindowBindingHandler* delegate);
++  ~DisplayCutoutPlugin() = default;
++
++  // Sends the cut-outs for the current orientation to the engine.
++  void SendDisplayCutouts();
++
++ private:
++  std::unique_ptr<BasicMessageChannel<rapidjson::Document>> channel_;
++  WindowBindingHandler* delegate_;
++  // The last message sent, so repeats can be skipped.
++  rapidjson::Document last_message_;
++};
++
++}  // namespace flutter
++
++#endif  // FLUTTER_SHELL_PLATFORM_LINUX_EMBEDDED_PLUGINS_DISPLAY_CUTOUT_PLUGIN_H_
+diff --git a/src/flutter/shell/platform/linux_embedded/window/elinux_window_wayland.cc b/src/flutter/shell/platform/linux_embedded/window/elinux_window_wayland.cc
+index 5df74d6..7a96d1b 100644
+--- a/src/flutter/shell/platform/linux_embedded/window/elinux_window_wayland.cc
++++ b/src/flutter/shell/platform/linux_embedded/window/elinux_window_wayland.cc
+@@ -95,6 +95,42 @@ double ReadDevicePixelRatio() {
+   return SnapDevicePixelRatio(
+       ReadDconfDouble("/lipstick/screen/primary/physicalDotsPerInch"));
+ }
++
++// Reads Silica's display cut-outs, e.g. "[[310, 0, 414, 66]]": rectangles as
++// [x, y, width, height] in native panel pixels.
++std::vector<PhysicalRect> ReadDisplayCutouts() {
++  std::vector<PhysicalRect> cutouts;
++  FILE* pipe =
++      popen("dconf read /desktop/sailfish/silica/cutouts 2>/dev/null", "r");
++  if (!pipe) {
++    return cutouts;
++  }
++  std::string value;
++  char buf[256];
++  while (std::fgets(buf, sizeof(buf), pipe)) {
++    value += buf;
++  }
++  pclose(pipe);
++
++  // Each innermost [...] holds one rectangle.
++  size_t open = value.find('[');
++  while (open != std::string::npos) {
++    const size_t next = value.find('[', open + 1);
++    const size_t close = value.find(']', open + 1);
++    if (close != std::string::npos &&
++        (next == std::string::npos || close < next)) {
++      PhysicalRect rect;
++      if (std::sscanf(value.c_str() + open + 1, "%d , %d , %d , %d",
++                      &rect.left, &rect.top, &rect.width,
++                      &rect.height) == 4 &&
++          rect.width > 0 && rect.height > 0) {
++        cutouts.push_back(rect);
++      }
++    }
++    open = next;
++  }
++  return cutouts;
++}
+ }  // namespace
+ 
+ const wl_registry_listener ELinuxWindowWayland::kWlRegistryListener = {
+@@ -1242,6 +1278,11 @@ ELinuxWindowWayland::ELinuxWindowWayland(
+     device_pixel_ratio_ = ratio;
+     device_pixel_ratio_locked_ = true;
+   }
++  display_cutouts_ = ReadDisplayCutouts();
++  for (const auto& c : display_cutouts_) {
++    ELINUX_LOG(INFO) << "Display cut-out: " << c.width << "x" << c.height
++                     << " at " << c.left << "," << c.top;
++  }
+   SetRotation(view_properties_.view_rotation);
+ 
+   // Lipstick reports rotation only through the wl_output transform. Follow it
+@@ -2405,6 +2446,57 @@ void ELinuxWindowWayland::SetPreferredOrientations(
+   MaybeApplyOutputTransform();
+ }
+ 
++DisplayCutouts ELinuxWindowWayland::GetDisplayCutouts() const {
++  DisplayCutouts cutouts;
++  // Only fullscreen wl_shell windows cover the whole panel. Lipstick keeps
++  // xdg_shell windows clear of the cut-outs itself.
++  if (!use_wl_shell_) {
++    return cutouts;
++  }
++  const int32_t view_width = GetCurrentWidth();
++  const int32_t view_height = GetCurrentHeight();
++  const bool sideways = current_rotation_ == 90 || current_rotation_ == 270;
++  const int32_t native_width = sideways ? view_height : view_width;
++  const int32_t native_height = sideways ? view_width : view_height;
++  for (const auto& c : display_cutouts_) {
++    // Native panel to view coordinates, as for touch input.
++    PhysicalRect r = c;
++    switch (current_rotation_) {
++      case 90:
++        r = {c.top, native_width - c.left - c.width, c.height, c.width};
++        break;
++      case 180:
++        r = {native_width - c.left - c.width, native_height - c.top - c.height,
++             c.width, c.height};
++        break;
++      case 270:
++        r = {native_height - c.top - c.height, c.left, c.height, c.width};
++        break;
++      default:
++        break;
++    }
++    cutouts.rects.push_back(r);
++
++    // Pad the view edge the cut-out is nearest to, up to its far side.
++    const int32_t to_top = r.top;
++    const int32_t to_right = view_width - r.left - r.width;
++    const int32_t to_bottom = view_height - r.top - r.height;
++    const int32_t to_left = r.left;
++    const int32_t nearest = std::min({to_top, to_right, to_bottom, to_left});
++    auto& padding = cutouts.padding;
++    if (nearest == to_top) {
++      padding.top = std::max<double>(padding.top, r.top + r.height);
++    } else if (nearest == to_bottom) {
++      padding.bottom = std::max<double>(padding.bottom, view_height - r.top);
++    } else if (nearest == to_left) {
++      padding.left = std::max<double>(padding.left, r.left + r.width);
++    } else {
++      padding.right = std::max<double>(padding.right, view_width - r.left);
++    }
++  }
++  return cutouts;
++}
++
+ bool ELinuxWindowWayland::IsTransformAllowed(int32_t transform) const {
+   return preferred_transforms_.empty() ||
+          std::find(preferred_transforms_.begin(), preferred_transforms_.end(),
+diff --git a/src/flutter/shell/platform/linux_embedded/window/elinux_window_wayland.h b/src/flutter/shell/platform/linux_embedded/window/elinux_window_wayland.h
+index a071f2c..aa6ec6d 100644
+--- a/src/flutter/shell/platform/linux_embedded/window/elinux_window_wayland.h
++++ b/src/flutter/shell/platform/linux_embedded/window/elinux_window_wayland.h
+@@ -96,6 +96,9 @@ class ELinuxWindowWayland : public ELinuxWindow, public WindowBindingHandler {
+   void SetPreferredOrientations(
+       const std::vector<DeviceOrientation>& orientations) override;
+ 
++  // |FlutterWindowBindingHandler|
++  DisplayCutouts GetDisplayCutouts() const override;
++
+   // |FlutterWindowBindingHandler|
+   void UpdateVirtualKeyboardArea(int32_t x,
+                                  int32_t y,
+@@ -271,6 +274,8 @@ class ELinuxWindowWayland : public ELinuxWindow, public WindowBindingHandler {
+   bool shown_as_cover_ = false;
+   // Allowed wl_output transforms, most preferred first; empty allows any.
+   std::vector<int32_t> preferred_transforms_;
++  // Display cut-outs from Silica's settings, in native panel pixels.
++  std::vector<PhysicalRect> display_cutouts_;
+ };
+ 
+ }  // namespace flutter
+diff --git a/src/flutter/shell/platform/linux_embedded/window_binding_handler.h b/src/flutter/shell/platform/linux_embedded/window_binding_handler.h
+index c8e5aea..ad94d60 100644
+--- a/src/flutter/shell/platform/linux_embedded/window_binding_handler.h
++++ b/src/flutter/shell/platform/linux_embedded/window_binding_handler.h
+@@ -30,6 +30,21 @@ struct PhysicalViewInsets {
+   double left = 0;
+ };
+ 
++// A rectangle in physical pixels.
++struct PhysicalRect {
++  int32_t left = 0;
++  int32_t top = 0;
++  int32_t width = 0;
++  int32_t height = 0;
++};
++
++// Display cut-outs (e.g. a camera notch) in view coordinates for the current
++// content orientation, and the padding that keeps content clear of them.
++struct DisplayCutouts {
++  std::vector<PhysicalRect> rects;
++  PhysicalViewInsets padding;
++};
++
+ // Orientations from SystemChrome.setPreferredOrientations.
+ enum class DeviceOrientation {
+   kPortraitUp,
+@@ -109,6 +124,9 @@ class WindowBindingHandler {
+   virtual void SetPreferredOrientations(
+       const std::vector<DeviceOrientation>& orientations) {}
+ 
++  // Returns the display cut-outs the view is drawn under, if any.
++  virtual DisplayCutouts GetDisplayCutouts() const { return {}; }
++
+   // Returns the clipboard data.
+   virtual std::string GetClipboardData() = 0;
+ 
