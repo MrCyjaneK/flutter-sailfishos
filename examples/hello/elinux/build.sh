@@ -60,8 +60,8 @@ if [ -f build/elinux/Makefile ]; then
 fi
 rm -rf build
 
-sfosbuild --in-place "$SFOS" "$ARCH" .
+sfosbuild --in-place "$SFOS" "$ARCH" ./rpm/flutter-sfos.spec
 
 if [ "${1:-}" = deploy ]; then
-	sfosbuild deploy "$DEVICE" .
+	sfosbuild deploy "$DEVICE" ./rpm/flutter-sfos.spec
 fi
