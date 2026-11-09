@@ -54,7 +54,7 @@ for f in rpm/*.yaml rpm/*.spec; do
 done
 test -n "$pkg"
 
-sfosbuild --in-place "$SFOS" "$ARCH" "$pkg"
+sfosbuild --network --in-place "$SFOS" "$ARCH" "$pkg"
 
 if [ "${1:-}" = deploy ]; then
 	sfosbuild deploy "$DEVICE" "$pkg"
