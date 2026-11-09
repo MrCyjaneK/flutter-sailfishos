@@ -22,12 +22,12 @@ APP    ?=
 export FLUTTER
 export FORCE
 export V
+export SFOS
+export ARCH
 
 RUNTIME   := versions/$(FLUTTER)/runtime
 ENGINE_SO := versions/$(FLUTTER)/engine/libflutter_engine.so
 RELEASE   ?= 1
-
-stamp = sed -e 's|@FLUTTER_VERSION@|$(FLUTTER)|g' -e 's|@RELEASE@|$(RELEASE)|g'
 
 .DEFAULT_GOAL := help
 .PHONY: help all engine embedder runtime hello app deploy clean
@@ -52,13 +52,7 @@ embedder:
 	./scripts/fetch-embedder.sh
 
 runtime: engine embedder
-	mkdir -p $(RUNTIME)/rpm $(RUNTIME)/cmake
-	$(stamp) template/runtime/flutter-sfos.spec.in > $(RUNTIME)/rpm/flutter-sfos.spec
-	$(stamp) template/runtime/flutter-sfos-aot.sh.in > $(RUNTIME)/flutter-sfos-aot
-	chmod +x $(RUNTIME)/flutter-sfos-aot
-	cp -f template/runtime/cmake/flutter-sfos-config.cmake.in $(RUNTIME)/cmake/
-	rm -rf $(RUNTIME)/build-client $(RUNTIME)/build-so
-	sfosbuild --in-place $(SFOS) $(ARCH) $(RUNTIME)/rpm/flutter-sfos.spec
+	./scripts/package-runtime.sh
 
 hello: runtime
 	FLUTTER_VERSION=$(FLUTTER) \

@@ -32,16 +32,40 @@ sync_repo() {
 	echo "ok $path @$rev"
 }
 
+SRC="$VERDIR/runtime/src/flutter-embedded-linux"
+ELINUX_DEST="$VERDIR/runtime/flutter-elinux"
+STAMP="$VERDIR/runtime/.embedder-stamp"
+PATCHDIR=$ROOT/patches/$FLUTTER
+
+stamp_payload() {
+	printf '%s %s\n' "$EMBEDDER_REV" "$ELINUX_REV"
+	if ls "$PATCHDIR/"*.patch >/dev/null 2>&1; then
+		cksum "$PATCHDIR"/*.patch
+	fi
+}
+
+already() {
+	[ -f "$SRC/CMakeLists.txt" ] || return 1
+	[ -f "$ELINUX_DEST/bin/flutter_elinux.dart" ] || return 1
+	[ -f "$ELINUX_DEST/bin/flutter-elinux" ] || return 1
+	[ -f "$STAMP" ] || return 1
+	[ "$(stamp_payload)" = "$(cat "$STAMP")" ]
+}
+
+if [ "${FORCE:-}" != 1 ] && already; then
+	echo "embedder $FLUTTER already fetched ($EMBEDDER_REV)"
+	echo "  make FLUTTER=$FLUTTER embedder FORCE=1  to rebuild"
+	exit 0
+fi
+
 sync_repo third_party/flutter-embedded-linux "$EMBEDDER_REPO" "$EMBEDDER_REV"
 sync_repo third_party/flutter-elinux "$ELINUX_REPO" "$ELINUX_REV"
 
-SRC="$VERDIR/runtime/src/flutter-embedded-linux"
 rm -rf "$SRC"
 mkdir -p "$SRC"
 tar -C "$ROOT/third_party/flutter-embedded-linux" \
 	--exclude=.git -cf - . | tar -C "$SRC" -xf -
 
-PATCHDIR=$ROOT/patches/$FLUTTER
 if ls "$PATCHDIR/"*.patch >/dev/null 2>&1; then
 	for p in "$PATCHDIR/"*.patch; do
 		echo "apply $(basename "$p")"
@@ -49,7 +73,6 @@ if ls "$PATCHDIR/"*.patch >/dev/null 2>&1; then
 	done
 fi
 
-ELINUX_DEST="$VERDIR/runtime/flutter-elinux"
 rm -rf "$ELINUX_DEST"
 mkdir -p "$ELINUX_DEST"
 tar -C "$ROOT/third_party/flutter-elinux" \
@@ -57,6 +80,8 @@ tar -C "$ROOT/third_party/flutter-elinux" \
 	-cf - . | tar -C "$ELINUX_DEST" -xf -
 test -f "$ELINUX_DEST/bin/flutter_elinux.dart"
 test -f "$ELINUX_DEST/bin/flutter-elinux"
+
+stamp_payload >"$STAMP"
 
 echo "patched embedder ($FLUTTER) -> $SRC"
 echo "flutter-elinux ($ELINUX_REV) -> $ELINUX_DEST"
