@@ -5,7 +5,7 @@
 # Add a version: copy versions/<prev>/pin.env, ln -s patches/<prev> patches/<ver>
 
 ifeq ($(FLUTTER),)
-  ifneq ($(filter-out help,$(MAKECMDGOALS)),)
+  ifneq ($(filter-out help hello-sfos,$(MAKECMDGOALS)),)
     $(error set FLUTTER=<ver>, e.g. make FLUTTER=3.44.0 $(firstword $(MAKECMDGOALS)))
   endif
 else ifeq ($(wildcard versions/$(FLUTTER)/pin.env),)
@@ -30,11 +30,12 @@ ENGINE_SO := versions/$(FLUTTER)/engine/libflutter_engine.so
 RELEASE   ?= 1
 
 .DEFAULT_GOAL := help
-.PHONY: help all engine embedder runtime hello app deploy clean
+.PHONY: help all engine embedder runtime hello hello-sfos app deploy clean
 
 help:
 	@echo "usage: make FLUTTER=<ver> engine | runtime | hello | deploy"
 	@echo "       make FLUTTER=<ver> app APP=<dir>"
+	@echo "       make hello-sfos   # stock Flutter app vs cyanek-sfos RPMs"
 	@echo "  SFOS=$(SFOS)  ARCH=$(ARCH)  DEVICE=$(DEVICE)"
 	@echo "versions:"
 	@ls -1 versions/*/pin.env | sed 's|versions/||;s|/pin.env||' | sed 's/^/  /'
@@ -58,6 +59,9 @@ hello: runtime
 	FLUTTER_VERSION=$(FLUTTER) \
 	FLUTTER_SFOS_RPMS=$(abspath versions/$(FLUTTER)/runtime/rpms) \
 		./examples/hello/elinux/build.sh
+
+hello-sfos:
+	cd examples/hello-sfos && sfosbuild --network --in-place $(SFOS) $(ARCH) rpm/hello-sfos.yaml
 
 app: runtime
 	@test -n "$(APP)" || { echo "usage: make FLUTTER=<ver> app APP=<dir>" >&2; exit 1; }

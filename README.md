@@ -78,6 +78,7 @@ versions/<ver>/pin.env              # ENGINE_HASH, ELINUX_ENGINE_HASH, EMBEDDER_
 patches/<ver>/                      # embedder diffs; symlink to a previous ver if unchanged
 engine/                             # Dockerfile (linux/arm64)
 examples/hello/                     # sample app; `./elinux/build.sh` → sfosbuild .
+examples/hello-sfos/                # stock Flutter app; `sfosbuild` + cyanek-sfos image hook
 template/elinux/                    # copy into an app as elinux/
 template/rpm/                       # copy into the app as rpm/
 template/.sfosbuild/                # copy into the app root

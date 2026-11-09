@@ -1,0 +1,37 @@
+Name: hello-sfos
+Summary: Stock Flutter counter for Sailfish OS
+Version: 1.0.0
+Release: 1
+Group: Applications/System
+License: BSD-3-Clause
+Sources:
+- '%{name}-%{version}.tar.bz2'
+Description: |
+    Stock Flutter app with an elinux/ runner, AOT via flutter-sfos 3.44.0.
+Configure: none
+Builder: none
+Requires:
+- flutter-sfos-3.44.0 = 3.44.0
+PkgBR:
+- clang
+- cmake
+- make
+- git
+- unzip
+- curl
+- flutter-sfos-3.44.0-devel
+ExtraInstall: |
+  /usr/libexec/flutter-sfos/3.44.0/flutter-sfos-aot "$PWD" "$PWD/build/sfos/bundle"
+  mkdir -p %{buildroot}%{_datadir}/hello-sfos
+  mkdir -p %{buildroot}%{_bindir}
+  mkdir -p %{buildroot}%{_datadir}/applications
+  cp -a build/sfos/bundle/. %{buildroot}%{_datadir}/hello-sfos/
+  rm -f %{buildroot}%{_datadir}/hello-sfos/lib/libflutter_engine.so \
+    %{buildroot}%{_datadir}/hello-sfos/lib/libflutter_elinux_*.so
+  install -m 755 rpm/hello-sfos.sh %{buildroot}%{_bindir}/hello-sfos
+  install -m 644 rpm/hello-sfos.desktop %{buildroot}%{_datadir}/applications/hello-sfos.desktop
+Files:
+- '%{_bindir}/hello-sfos'
+- '%{_datadir}/applications/hello-sfos.desktop'
+- '%dir %{_datadir}/hello-sfos'
+- '%{_datadir}/hello-sfos/'

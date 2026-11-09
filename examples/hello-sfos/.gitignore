@@ -32,6 +32,8 @@ migrate_working_dir/
 .pub/
 /build/
 /coverage/
+/*.rpm
+/rpms/
 
 # Symbolication related
 app.*.symbols

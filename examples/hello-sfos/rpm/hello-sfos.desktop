@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Hello SFOS
+Comment=Stock Flutter counter on Sailfish OS
+Icon=icon-m-developer-mode
+Exec=hello-sfos
+X-Nemo-Application-Type=generic
+
+[X-Sailjail]
+Sandboxing=Disabled
