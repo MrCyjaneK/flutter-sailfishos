@@ -42,19 +42,23 @@ solutions = [
 target_os = ["linux"]
 GCLIENT
 
-# CIPD has no flutter/java/openjdk/linux-arm64. DEPS always pulls it (the
-# download_jdk var is unused). The embedder build does not need Java.
+# CIPD has no flutter/java/openjdk/linux-arm64.
 python3 - "$DEST/DEPS" <<'PY'
 import pathlib, re, sys
 p = pathlib.Path(sys.argv[1])
 text = p.read_text()
-pat = r"('engine/src/flutter/third_party/java/openjdk':\s*\{)"
-if re.search(pat, text) and "download_jdk" not in text.split("java/openjdk", 1)[1][:500]:
-	text, n = re.subn(pat, r"\1\n    'condition': 'download_jdk',", text, count=1)
-	if n != 1:
-		sys.exit("sync: failed to patch openjdk out of DEPS")
-	p.write_text(text)
-	print("sync: skipped CIPD openjdk (no linux-arm64 package)")
+pat = r"'engine/src/flutter/third_party/java/openjdk':\s*\{"
+m = re.search(pat, text)
+if m:
+	rest = text[m.end():]
+	nxt = re.search(r"\n  '[^']+':", rest)
+	body = rest[:nxt.start()] if nxt else rest[:800]
+	if re.search(r"""['"]condition['"]\s*:""", body):
+		print("sync: openjdk already conditioned; leaving DEPS alone")
+	else:
+		text = text[:m.end()] + "\n    'condition': 'download_jdk'," + text[m.end():]
+		p.write_text(text)
+		print("sync: skipped CIPD openjdk (no linux-arm64 package)")
 PY
 
 cd "$DEST"
