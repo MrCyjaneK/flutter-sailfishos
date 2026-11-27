@@ -1,0 +1,233 @@
+Honour SystemChrome.setPreferredOrientations (needs 0007).
+
+The platform plugin passes the allowed orientations, most preferred first, to
+the window. When Lipstick reports a rotation to an orientation the app doesn't
+allow, the content stays where it is; if the current orientation becomes
+disallowed, it moves to the most preferred one. The Qt surface extension's
+content orientation mask is updated to match. An empty list allows any.
+
+Mapping (portrait panel): portraitUp = 0, landscapeLeft = 270,
+portraitDown = 180, landscapeRight = 90 (wl_output transforms).
+A landscape-only app keeps its landscape content while shown as a cover.
+
+diff --git a/src/flutter/shell/platform/linux_embedded/plugins/platform_plugin.cc b/src/flutter/shell/platform/linux_embedded/plugins/platform_plugin.cc
+index 7670c15..53b4ef0 100644
+--- a/src/flutter/shell/platform/linux_embedded/plugins/platform_plugin.cc
++++ b/src/flutter/shell/platform/linux_embedded/plugins/platform_plugin.cc
+@@ -26,12 +26,30 @@ constexpr char kChannelName[] = "flutter/platform";
+ constexpr char kGetClipboardDataMethod[] = "Clipboard.getData";
+ constexpr char kSetClipboardDataMethod[] = "Clipboard.setData";
+ constexpr char kSystemNavigatorPopMethod[] = "SystemNavigator.pop";
++constexpr char kSetPreferredOrientationsMethod[] =
++    "SystemChrome.setPreferredOrientations";
+ 
+ constexpr char kTextPlainFormat[] = "text/plain";
+ constexpr char kTextKey[] = "text";
+ 
+ constexpr char kUnknownClipboardFormatError[] =
+     "Unknown clipboard format error";
++
++bool ParseDeviceOrientation(const std::string& name,
++                            DeviceOrientation* orientation) {
++  if (name == "DeviceOrientation.portraitUp") {
++    *orientation = DeviceOrientation::kPortraitUp;
++  } else if (name == "DeviceOrientation.landscapeLeft") {
++    *orientation = DeviceOrientation::kLandscapeLeft;
++  } else if (name == "DeviceOrientation.portraitDown") {
++    *orientation = DeviceOrientation::kPortraitDown;
++  } else if (name == "DeviceOrientation.landscapeRight") {
++    *orientation = DeviceOrientation::kLandscapeRight;
++  } else {
++    return false;
++  }
++  return true;
++}
+ }  // namespace
+ 
+ PlatformPlugin::PlatformPlugin(BinaryMessenger* messenger,
+@@ -81,6 +99,21 @@ void PlatformPlugin::HandleMethodCall(
+     }
+     delegate_->SetClipboardData(itr->value.GetString());
+     result->Success();
++  } else if (method.compare(kSetPreferredOrientationsMethod) == 0) {
++    // A list of DeviceOrientation names, most preferred first.
++    std::vector<DeviceOrientation> orientations;
++    const rapidjson::Value* args = method_call.arguments();
++    if (args && args->IsArray()) {
++      for (const auto& value : args->GetArray()) {
++        DeviceOrientation orientation;
++        if (value.IsString() &&
++            ParseDeviceOrientation(value.GetString(), &orientation)) {
++          orientations.push_back(orientation);
++        }
++      }
++    }
++    delegate_->SetPreferredOrientations(orientations);
++    result->Success();
+   } else if (method.compare(kSystemNavigatorPopMethod) == 0) {
+     // todo: it is necessary to consider whether exit() is okay
+     exit(EXIT_SUCCESS);
+diff --git a/src/flutter/shell/platform/linux_embedded/window/elinux_window_wayland.cc b/src/flutter/shell/platform/linux_embedded/window/elinux_window_wayland.cc
+index 062477f..5df74d6 100644
+--- a/src/flutter/shell/platform/linux_embedded/window/elinux_window_wayland.cc
++++ b/src/flutter/shell/platform/linux_embedded/window/elinux_window_wayland.cc
+@@ -1635,12 +1635,7 @@ bool ELinuxWindowWayland::CreateRenderSurface(int32_t width_px,
+         qt_surface_extension_, native_window_->Surface());
+     qt_extended_surface_add_listener(qt_extended_surface_,
+                                      &kQtExtendedSurfaceListener, this);
+-    qt_extended_surface_set_content_orientation_mask(
+-        qt_extended_surface_,
+-        QT_EXTENDED_SURFACE_ORIENTATION_PORTRAITORIENTATION |
+-            QT_EXTENDED_SURFACE_ORIENTATION_LANDSCAPEORIENTATION |
+-            QT_EXTENDED_SURFACE_ORIENTATION_INVERTEDPORTRAITORIENTATION |
+-            QT_EXTENDED_SURFACE_ORIENTATION_INVERTEDLANDSCAPEORIENTATION);
++    UpdateContentOrientationMask();
+     qt_extended_surface_set_window_flags(qt_extended_surface_, 0);
+   } else {
+     xdg_surface_ =
+@@ -2306,8 +2301,14 @@ bool ELinuxWindowWayland::IsCoverConfigure(int32_t width,
+ void ELinuxWindowWayland::MaybeApplyOutputTransform() {
+   // Without a cover window of its own, Lipstick scales this window into the
+   // portrait app cover, so draw portrait while shown as a cover.
+-  const int32_t target =
+-      shown_as_cover_ ? WL_OUTPUT_TRANSFORM_NORMAL : transform_;
++  int32_t target = shown_as_cover_ ? WL_OUTPUT_TRANSFORM_NORMAL : transform_;
++  // Respect the app's preferred orientations: stay put when the new one isn't
++  // allowed, or move to the most preferred one if the current one isn't.
++  if (!IsTransformAllowed(target)) {
++    target = IsTransformAllowed(applied_transform_)
++                 ? applied_transform_
++                 : preferred_transforms_.front();
++  }
+   if (!FollowsOutputTransform() || target == applied_transform_) {
+     return;
+   }
+@@ -2380,6 +2381,56 @@ int32_t ELinuxWindowWayland::GetContentOrientationAngle() const {
+   }
+ }
+ 
++void ELinuxWindowWayland::SetPreferredOrientations(
++    const std::vector<DeviceOrientation>& orientations) {
++  // In wl_output transform terms, as Lipstick sends them for a portrait panel.
++  preferred_transforms_.clear();
++  for (const auto orientation : orientations) {
++    switch (orientation) {
++      case DeviceOrientation::kPortraitUp:
++        preferred_transforms_.push_back(WL_OUTPUT_TRANSFORM_NORMAL);
++        break;
++      case DeviceOrientation::kLandscapeLeft:
++        preferred_transforms_.push_back(WL_OUTPUT_TRANSFORM_270);
++        break;
++      case DeviceOrientation::kPortraitDown:
++        preferred_transforms_.push_back(WL_OUTPUT_TRANSFORM_180);
++        break;
++      case DeviceOrientation::kLandscapeRight:
++        preferred_transforms_.push_back(WL_OUTPUT_TRANSFORM_90);
++        break;
++    }
++  }
++  UpdateContentOrientationMask();
++  MaybeApplyOutputTransform();
++}
++
++bool ELinuxWindowWayland::IsTransformAllowed(int32_t transform) const {
++  return preferred_transforms_.empty() ||
++         std::find(preferred_transforms_.begin(), preferred_transforms_.end(),
++                   transform) != preferred_transforms_.end();
++}
++
++void ELinuxWindowWayland::UpdateContentOrientationMask() {
++  if (!qt_extended_surface_) {
++    return;
++  }
++  int32_t mask = 0;
++  if (IsTransformAllowed(WL_OUTPUT_TRANSFORM_NORMAL)) {
++    mask |= QT_EXTENDED_SURFACE_ORIENTATION_PORTRAITORIENTATION;
++  }
++  if (IsTransformAllowed(WL_OUTPUT_TRANSFORM_270)) {
++    mask |= QT_EXTENDED_SURFACE_ORIENTATION_LANDSCAPEORIENTATION;
++  }
++  if (IsTransformAllowed(WL_OUTPUT_TRANSFORM_180)) {
++    mask |= QT_EXTENDED_SURFACE_ORIENTATION_INVERTEDPORTRAITORIENTATION;
++  }
++  if (IsTransformAllowed(WL_OUTPUT_TRANSFORM_90)) {
++    mask |= QT_EXTENDED_SURFACE_ORIENTATION_INVERTEDLANDSCAPEORIENTATION;
++  }
++  qt_extended_surface_set_content_orientation_mask(qt_extended_surface_, mask);
++}
++
+ void ELinuxWindowWayland::MaybeUpdateDevicePixelRatio() {
+   if (device_pixel_ratio_locked_ || output_physical_width_mm_ <= 0 ||
+       output_mode_width_ <= 0) {
+diff --git a/src/flutter/shell/platform/linux_embedded/window/elinux_window_wayland.h b/src/flutter/shell/platform/linux_embedded/window/elinux_window_wayland.h
+index cd1013a..a071f2c 100644
+--- a/src/flutter/shell/platform/linux_embedded/window/elinux_window_wayland.h
++++ b/src/flutter/shell/platform/linux_embedded/window/elinux_window_wayland.h
+@@ -92,6 +92,10 @@ class ELinuxWindowWayland : public ELinuxWindow, public WindowBindingHandler {
+   // |FlutterWindowBindingHandler|
+   int32_t GetContentOrientationAngle() const override;
+ 
++  // |FlutterWindowBindingHandler|
++  void SetPreferredOrientations(
++      const std::vector<DeviceOrientation>& orientations) override;
++
+   // |FlutterWindowBindingHandler|
+   void UpdateVirtualKeyboardArea(int32_t x,
+                                  int32_t y,
+@@ -134,6 +138,8 @@ class ELinuxWindowWayland : public ELinuxWindow, public WindowBindingHandler {
+   // Follows the wl_output transform that Lipstick sends on rotation.
+   void MaybeApplyOutputTransform();
+   bool FollowsOutputTransform() const;
++  bool IsTransformAllowed(int32_t transform) const;
++  void UpdateContentOrientationMask();
+ 
+   bool IsCoverConfigure(int32_t width, int32_t height) const;
+ 
+@@ -263,6 +269,8 @@ class ELinuxWindowWayland : public ELinuxWindow, public WindowBindingHandler {
+   qt_surface_extension* qt_surface_extension_ = nullptr;
+   qt_extended_surface* qt_extended_surface_ = nullptr;
+   bool shown_as_cover_ = false;
++  // Allowed wl_output transforms, most preferred first; empty allows any.
++  std::vector<int32_t> preferred_transforms_;
+ };
+ 
+ }  // namespace flutter
+diff --git a/src/flutter/shell/platform/linux_embedded/window_binding_handler.h b/src/flutter/shell/platform/linux_embedded/window_binding_handler.h
+index c52104a..c8e5aea 100644
+--- a/src/flutter/shell/platform/linux_embedded/window_binding_handler.h
++++ b/src/flutter/shell/platform/linux_embedded/window_binding_handler.h
+@@ -7,6 +7,7 @@
+ 
+ #include <string>
+ #include <variant>
++#include <vector>
+ 
+ #include "flutter/shell/platform/linux_embedded/public/flutter_elinux.h"
+ #include "flutter/shell/platform/linux_embedded/surface/surface_gl.h"
+@@ -29,6 +30,14 @@ struct PhysicalViewInsets {
+   double left = 0;
+ };
+ 
++// Orientations from SystemChrome.setPreferredOrientations.
++enum class DeviceOrientation {
++  kPortraitUp,
++  kLandscapeLeft,
++  kPortraitDown,
++  kLandscapeRight,
++};
++
+ using ELinuxRenderSurfaceTarget = SurfaceGl;
+ 
+ // Abstract class for binding Linux embedded platform windows to Flutter views.
+@@ -95,6 +104,11 @@ class WindowBindingHandler {
+   // to the display's native orientation, as Maliit's appOrientation expects.
+   virtual int32_t GetContentOrientationAngle() const { return 0; }
+ 
++  // Sets the orientations the app allows, most preferred first. An empty list
++  // allows any orientation.
++  virtual void SetPreferredOrientations(
++      const std::vector<DeviceOrientation>& orientations) {}
++
+   // Returns the clipboard data.
+   virtual std::string GetClipboardData() = 0;
+ 
