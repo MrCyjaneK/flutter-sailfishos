@@ -1,6 +1,10 @@
 import 'package:flutter/material.dart';
 
+import 'sfos_cutouts.dart';
+
 void main() {
+  WidgetsFlutterBinding.ensureInitialized(); // needed before using a channel
+  listenForDisplayCutouts();
   runApp(const MyApp());
 }
 
@@ -11,6 +15,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      builder: cutoutPadding,
       title: 'Flutter Demo',
       theme: ThemeData(
         // This is the theme of your application.

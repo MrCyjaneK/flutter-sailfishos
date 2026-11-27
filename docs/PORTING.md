@@ -56,3 +56,96 @@ Engine/embedder source stays in *this* repo. App repos only consume those
 RPMs plus `elinux/`, `rpm/`, and `.sfosbuild/`.
 
 See `examples/hello/` (`./elinux/build.sh`).
+
+## Camera cut-outs
+
+Apps run full screen, so content is drawn under the camera cut-out. The
+runtime reads the cut-out from the device's Silica settings and sends it on the
+`flutter-sfos/display_cutouts` channel, but the Flutter embedder API can't set
+`MediaQuery.padding`, so the app has to apply it.
+
+The message is JSON, in physical pixels for the current orientation. It is sent
+at start-up and whenever the orientation changes:
+
+```json
+{"version": 1,
+ "padding": {"top": 66, "right": 0, "bottom": 0, "left": 0},
+ "cutouts": [{"left": 310, "top": 0, "width": 414, "height": 66}]
+}
+```
+
+`version` changes only if the format changes incompatibly.
+
+Add `lib/sfos_cutouts.dart`:
+
+```dart
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+final _padding = ValueNotifier<EdgeInsets>(EdgeInsets.zero); // physical px
+
+void listenForDisplayCutouts() {
+  const BasicMessageChannel<Object?>(
+    'flutter-sfos/display_cutouts',
+    JSONMessageCodec(),
+  ).setMessageHandler((message) async {
+    final p = (message! as Map)['padding'] as Map;
+    double v(String k) => (p[k] as num).toDouble();
+    _padding.value = EdgeInsets.fromLTRB(
+      v('left'),
+      v('top'),
+      v('right'),
+      v('bottom'),
+    );
+    return null;
+  });
+}
+
+Widget cutoutPadding(BuildContext context, Widget? child) {
+  return ValueListenableBuilder<EdgeInsets>(
+    valueListenable: _padding,
+    builder: (context, padding, _) {
+      final mq = MediaQuery.of(context);
+      final extra = padding / mq.devicePixelRatio;
+      return MediaQuery(
+        data: mq.copyWith(
+          padding: mq.padding + extra,
+          viewPadding: mq.viewPadding + extra,
+        ),
+        child: child!,
+      );
+    },
+  );
+}
+```
+
+then, in `lib/main.dart`, import it and start listening before `runApp`:
+
+```dart
+import 'sfos_cutouts.dart';
+
+void main() {
+  WidgetsFlutterBinding.ensureInitialized(); // needed before using a channel
+  listenForDisplayCutouts();
+  runApp(const MyApp());
+}
+```
+
+and add the builder wherever the app creates its `MaterialApp` (in
+`MyApp.build` for a project made with `flutter create`):
+
+```dart
+return MaterialApp(
+  builder: cutoutPadding,
+  title: 'Flutter Demo',
+  // ...the rest unchanged
+);
+```
+
+If the `MaterialApp` already has a `builder`, wrap it:
+`builder: (context, child) => cutoutPadding(context, yourBuilder(context, child))`.
+
+`AppBar` then draws its background behind the cut-out and keeps its contents
+below it, and `SafeArea` and scroll views keep clear of it, as on a phone with
+a notch. On other platforms nothing is sent and nothing changes. Needs a
+`flutter-sfos` runtime with patch 0009.
